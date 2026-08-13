@@ -12,4 +12,7 @@ data/recordings/
 data/snapshots/
 data/events/
 models/
+*.pt
+*.onnx
+*.gguf
 *.log
