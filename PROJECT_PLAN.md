@@ -156,10 +156,11 @@ camera:
   reconnect_seconds: 2
 
 detection:
-  model: "CURRENT_NANO_MODEL.pt"
+  model: "yolo26n.pt"
   confidence: 0.35
+  image_size: 640
   classes: [person, bicycle, car, motorcycle, bus, truck]
-  device: auto
+  device: cpu
 
 scene:
   roi: []                 # points selected from a captured reference frame
@@ -185,7 +186,7 @@ dashboard:
   bind_address: "127.0.0.1"
 ```
 
-The actual model filename should be pinned when implementation begins, together with package versions and a recorded licence decision.
+The vehicle/person model is pinned by name as `yolo26n.pt`; package versions are constrained in `pyproject.toml`. Record a final licence decision before distributing the project or using it commercially.
 
 ## 6. Delivery phases
 
@@ -204,6 +205,10 @@ Create a small camera diagnostic command that:
 **Exit criteria:** a 10-minute run survives at least one deliberate stream restart and does not accumulate increasing delay.
 
 ### Phase 1 — Vehicle and human detection
+
+**Implementation status:** implemented by the `roundabout-detect` command. It consumes the newest `FramePacket`, runs `yolo26n.pt`, filters to the six configured road-user/person classes, draws boxes and confidence labels, supports GUI and headless operation, saves annotated snapshots, and reports capture rate, inference rate/time, frame age, processed frames, and overwritten frames. A single-frame benchmark mode compares CPU and available MPS execution with explicit device synchronization.
+
+On the initial 1920×1080 camera benchmark at `imgsz=640` (two warmups and five measured calls), CPU averaged 34.1 ms / 29.3 effective FPS and MPS averaged 36.1 ms / 27.7 effective FPS. CPU is therefore the current default; this is a machine-specific observation, not a general claim about MPS. A 45-second live run processed 841 newest frames while receiving 1,345, demonstrating bounded backpressure rather than a growing queue. The live stream has produced a `person` detection, but representative daylight review of cars and other classes remains an acceptance exercise.
 
 - Run the nano detector on the newest frame.
 - Draw class, confidence, and bounding boxes.

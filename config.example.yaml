@@ -13,3 +13,10 @@ diagnostic:
   recording_directory: "data/recordings"
   recording_seconds: 120
   recording_fps: 15.0
+
+detection:
+  model: "yolo26n.pt"
+  device: "cpu"
+  confidence: 0.35
+  image_size: 640
+  classes: [person, bicycle, car, motorcycle, bus, truck]
