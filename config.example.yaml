@@ -1,0 +1,15 @@
+# Phase 0 currently accepts these settings as command-line options. This file
+# records the intended values for the later shared application configuration.
+camera:
+  url: "http://192.168.1.142:8080/video"
+  reconnect_seconds: 2.0
+  open_timeout_seconds: 5.0
+  read_timeout_seconds: 5.0
+  stale_after_seconds: 2.0
+
+diagnostic:
+  metrics_interval_seconds: 2.0
+  snapshot_directory: "data/snapshots"
+  recording_directory: "data/recordings"
+  recording_seconds: 120
+  recording_fps: 15.0

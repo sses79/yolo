@@ -1,0 +1,15 @@
+.DS_Store
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+config.yaml
+data/recordings/
+data/snapshots/
+data/events/
+models/
+*.log

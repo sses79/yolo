@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "roundabout-ai"
+version = "0.1.0"
+description = "Local Android IP Webcam diagnostics and roundabout computer-vision demo"
+readme = "README.md"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "opencv-python>=5.0,<6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9,<10",
+]
+
+[project.scripts]
+roundabout-camera = "roundabout_ai.diagnostic:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
