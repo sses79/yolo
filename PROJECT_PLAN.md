@@ -220,6 +220,16 @@ On the initial 1920×1080 camera benchmark at `imgsz=640` (two warmups and five 
 
 ### Phase 2 — Scene calibration and tracking
 
+**Implementation status:** implemented. The `roundabout-calibrate` command
+captures or opens a clean reference frame and writes a YAML ROI plus one or
+more finite count lines. `roundabout-detect` now uses persistent Ultralytics
+ByteTrack IDs, scales the calibration to the live resolution, filters on box
+centre, labels tracks, and emits a directional crossing once per track/line
+after a configurable minimum track age. Geometry, calibration serialization,
+ROI filtering, tracker adaptation, direction, finite-line rejection, track
+expiry, and deduplication have deterministic tests. The remaining acceptance
+exercise is the manual review of at least 100 representative road users.
+
 - Save one clean reference frame.
 - Add a small calibration tool for clicking ROI polygon points and count-line endpoints.
 - Ignore detections outside the road ROI.

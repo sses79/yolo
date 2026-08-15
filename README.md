@@ -1,8 +1,9 @@
 # Roundabout AI
 
 Local computer-vision demo using an Android phone running IP Webcam. Phase 0
-provides resilient camera diagnostics; Phase 1 adds local YOLO vehicle and
-person detection.
+provides resilient camera diagnostics, Phase 1 adds local YOLO vehicle/person
+detection, and Phase 2 adds scene calibration, ByteTrack IDs, ROI filtering,
+and directional line-crossing counts.
 
 ## Project setup
 
@@ -115,6 +116,66 @@ Phase 1 metrics separate camera input rate from AI throughput:
 Overwritten frames are expected when inference is slower than the camera. They
 show that stale frames are being discarded instead of accumulating latency.
 
+## Phase 2 scene calibration, tracking, and counting
+
+First capture a clean reference frame and interactively mark the road region.
+Left-click at least three ROI polygon points, press Enter, then click endpoint
+pairs for one or more count lines. Press `s` to save, `u` to undo, or `q` to
+cancel:
+
+```bash
+.venv/bin/roundabout-calibrate
+```
+
+The default outputs are ignored local files:
+
+- `data/calibration/reference.jpg` — the full-resolution calibration frame;
+- `data/calibration/scene.yaml` — ROI and count-line coordinates.
+
+An existing image can be calibrated without the live camera:
+
+```bash
+.venv/bin/roundabout-calibrate \
+  --image data/snapshots/example.jpg \
+  --output data/calibration/scene.yaml
+```
+
+Run detection with the calibrated scene:
+
+```bash
+.venv/bin/roundabout-detect \
+  --scene-config data/calibration/scene.yaml
+```
+
+The live command now uses Ultralytics ByteTrack with persistent track IDs.
+Detections whose box centre is outside the ROI are excluded. A crossing is
+counted only when the tracked centre moves across the finite line segment,
+the track is at least three observations old, and that track has not already
+crossed that line. Reversing over the same line does not count twice.
+
+Line direction depends on endpoint order. The generated YAML uses
+`negative_to_positive` and `positive_to_negative`; rename those values to
+scene-specific labels such as `entering` and `leaving` after calibration:
+
+```yaml
+count_lines:
+  - name: north_entry
+    start: [420, 610]
+    end: [980, 590]
+    negative_to_positive: entering
+    positive_to_negative: leaving
+```
+
+Coordinates are stored against `reference_size` and scaled if the live frame
+size differs. Current cumulative crossing totals are included in periodic
+metrics. Each new crossing is also printed with line, direction, class,
+track ID, and confidence. These are live counters only; Phase 3 adds durable
+event storage and the Streamlit dashboard.
+
+Useful tuning options are `--minimum-track-age`, `--maximum-missing-frames`,
+and `--tracker-config`. Run without `--scene-config` to see tracking IDs over
+the whole frame without filtering or counting.
+
 ## Metrics
 
 The command periodically prints:
@@ -136,9 +197,12 @@ useful symptom of a blocked/frozen local pipeline.
 .venv/bin/python -m pytest
 ```
 
-See [PROJECT_PLAN.md](PROJECT_PLAN.md) for later detection, tracking, dashboard,
-and optional ANPR phases. See the
+See [PROJECT_PLAN.md](PROJECT_PLAN.md) for the dashboard and optional ANPR
+phases. See the
 [Phase 0 learning guide](docs/phase-0-learning-guide.md) for the architecture,
 execution flow, test boundaries, and focused experiments behind that phase. The
 [Phase 1 learning guide](docs/phase-1-learning-guide.md) explains the detector
 boundary, live inference flow, performance measurements, and path to tracking.
+The [Phase 2 learning guide](docs/phase-2-learning-guide.md) traces calibration,
+persistent identity, ROI admission, finite-line crossing, deduplication, and the
+remaining live accuracy boundary.

@@ -44,6 +44,12 @@ class FakeModel:
         self.calls.append(kwargs)
         return [FakeResult()]
 
+    def track(self, **kwargs: object) -> list[FakeResult]:
+        self.calls.append(kwargs)
+        result = FakeResult()
+        result.boxes.id = FakeTensor([42.0])
+        return [result]
+
 
 def test_parse_class_names_normalizes_and_deduplicates() -> None:
     assert parse_class_names(" Car,person,car ") == ("car", "person")
@@ -85,6 +91,24 @@ def test_yolo_detector_rejects_unknown_requested_class() -> None:
             class_names=("truck",),
             model_factory=lambda _path: FakeModel(),
         )
+
+
+def test_yolo_tracker_adds_persistent_id_and_bytetrack_options() -> None:
+    model = FakeModel()
+    detector = YoloDetector(
+        "fake.pt",
+        device="cpu",
+        class_names=("car",),
+        model_factory=lambda _path: model,
+    )
+
+    batch = detector.track(
+        np.zeros((20, 20, 3), dtype=np.uint8), tracker_config="custom.yaml"
+    )
+
+    assert batch.detections[0].track_id == 42
+    assert model.calls[0]["persist"] is True
+    assert model.calls[0]["tracker"] == "custom.yaml"
 
 
 def test_annotation_returns_copy_and_draws_box() -> None:

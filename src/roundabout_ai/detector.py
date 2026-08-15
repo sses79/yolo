@@ -28,6 +28,8 @@ class ModelLike(Protocol):
 
     def predict(self, **kwargs: object) -> Sequence[object]: ...
 
+    def track(self, **kwargs: object) -> Sequence[object]: ...
+
 
 ModelFactory = Callable[[str], ModelLike]
 
@@ -38,6 +40,7 @@ class Detection:
     label: str
     confidence: float
     xyxy: tuple[int, int, int, int]
+    track_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,17 +155,28 @@ class YoloDetector:
         if missing:
             raise ValueError(f"model does not provide requested classes: {', '.join(missing)}")
 
-    def predict(self, frame: Frame) -> DetectionBatch:
+    def _run(
+        self,
+        frame: Frame,
+        *,
+        track: bool,
+        tracker_config: str = "bytetrack.yaml",
+    ) -> DetectionBatch:
         _synchronize(self.device)
         started_at = time.perf_counter()
-        results = self._model.predict(
-            source=frame,
-            conf=self.confidence,
-            imgsz=self.image_size,
-            classes=list(self._class_ids),
-            device=self.device,
-            verbose=False,
-        )
+        kwargs: dict[str, object] = {
+            "source": frame,
+            "conf": self.confidence,
+            "imgsz": self.image_size,
+            "classes": list(self._class_ids),
+            "device": self.device,
+            "verbose": False,
+        }
+        if track:
+            kwargs.update(persist=True, tracker=tracker_config)
+            results = self._model.track(**kwargs)
+        else:
+            results = self._model.predict(**kwargs)
         _synchronize(self.device)
         elapsed = time.perf_counter() - started_at
 
@@ -173,8 +187,14 @@ class YoloDetector:
                 coordinates = _as_list(boxes.xyxy)
                 confidences = _as_list(boxes.conf)
                 class_ids = _as_list(boxes.cls)
-                for coordinates_row, confidence, class_id in zip(
-                    coordinates, confidences, class_ids, strict=True
+                raw_track_ids = getattr(boxes, "id", None)
+                track_ids: list[object]
+                if raw_track_ids is None:
+                    track_ids = [None] * len(coordinates)
+                else:
+                    track_ids = _as_list(raw_track_ids)
+                for coordinates_row, confidence, class_id, track_id in zip(
+                    coordinates, confidences, class_ids, track_ids, strict=True
                 ):
                     numeric_class_id = int(class_id)
                     x1, y1, x2, y2 = (int(round(float(value))) for value in coordinates_row)
@@ -184,9 +204,20 @@ class YoloDetector:
                             label=self._names[numeric_class_id],
                             confidence=float(confidence),
                             xyxy=(x1, y1, x2, y2),
+                            track_id=None if track_id is None else int(track_id),
                         )
                     )
         return DetectionBatch(tuple(detections), elapsed, self.device)
+
+    def predict(self, frame: Frame) -> DetectionBatch:
+        return self._run(frame, track=False)
+
+    def track(
+        self, frame: Frame, *, tracker_config: str = "bytetrack.yaml"
+    ) -> DetectionBatch:
+        """Run Ultralytics tracking while retaining state between frames."""
+
+        return self._run(frame, track=True, tracker_config=tracker_config)
 
 
 def benchmark_detector(
@@ -234,7 +265,8 @@ def annotate_detections(frame: Frame, detections: Iterable[Detection]) -> Frame:
         y2 = max(0, min(y2, height - 1))
         color = COLORS.get(detection.label, (255, 255, 255))
         cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
-        text = f"{detection.label} {detection.confidence:.2f}"
+        track = "" if detection.track_id is None else f" #{detection.track_id}"
+        text = f"{detection.label}{track} {detection.confidence:.2f}"
         (text_width, text_height), baseline = cv2.getTextSize(
             text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1
         )
