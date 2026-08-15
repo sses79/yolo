@@ -8,11 +8,12 @@ from roundabout_ai.capture import (
     CameraCapture,
     CaptureConfig,
     ConsumptionRate,
+    Frame,
     LatestFrameStore,
 )
 
 
-def frame(value: int = 0) -> np.ndarray:
+def frame(value: int = 0) -> Frame:
     return np.full((2, 3, 3), value, dtype=np.uint8)
 
 
@@ -93,7 +94,7 @@ def test_camera_retries_after_open_failure_and_publishes_frame() -> None:
         def isOpened(self) -> bool:
             return self.opened
 
-        def read(self):
+        def read(self) -> tuple[bool, Frame | None]:
             self.reads += 1
             if self.reads == 1:
                 return True, frame(9)

@@ -67,12 +67,11 @@ def test_snapshot_preserves_full_resolution(tmp_path: Path) -> None:
     import cv2
 
     saved = cv2.imread(str(path))
+    assert saved is not None
     assert saved.shape == source.shape
 
 
-def test_recorder_samples_frames_at_output_rate(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_recorder_samples_frames_at_output_rate(tmp_path: Path, monkeypatch) -> None:
     import roundabout_ai.diagnostic as diagnostic
 
     class FakeWriter:

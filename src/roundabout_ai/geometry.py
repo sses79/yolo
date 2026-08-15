@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Iterable
 
 Point = tuple[float, float]
 
@@ -12,9 +12,9 @@ Point = tuple[float, float]
 def signed_side(point: Point, start: Point, end: Point) -> float:
     """Return the 2-D cross product for a point and an ordered line."""
 
-    return (end[0] - start[0]) * (point[1] - start[1]) - (
-        end[1] - start[1]
-    ) * (point[0] - start[0])
+    return (end[0] - start[0]) * (point[1] - start[1]) - (end[1] - start[1]) * (
+        point[0] - start[0]
+    )
 
 
 def point_in_polygon(point: Point, polygon: tuple[Point, ...]) -> bool:
@@ -29,9 +29,11 @@ def point_in_polygon(point: Point, polygon: tuple[Point, ...]) -> bool:
         x1, y1 = previous
         x2, y2 = current
         cross = signed_side(point, previous, current)
-        if abs(cross) <= 1e-6 and min(x1, x2) <= x <= max(x1, x2) and min(
-            y1, y2
-        ) <= y <= max(y1, y2):
+        if (
+            abs(cross) <= 1e-6
+            and min(x1, x2) <= x <= max(x1, x2)
+            and min(y1, y2) <= y <= max(y1, y2)
+        ):
             return True
         if (y1 > y) != (y2 > y):
             intersection_x = x1 + (y - y1) * (x2 - x1) / (y2 - y1)
@@ -126,7 +128,9 @@ class CrossingCounter:
             return 0
         return 1 if value > 0 else -1
 
-    def update(self, observations: Iterable[TrackObservation]) -> tuple[CrossingEvent, ...]:
+    def update(
+        self, observations: Iterable[TrackObservation]
+    ) -> tuple[CrossingEvent, ...]:
         self._frame_number += 1
         events: list[CrossingEvent] = []
         for observation in observations:

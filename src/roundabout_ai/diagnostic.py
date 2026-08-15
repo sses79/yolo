@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
-from datetime import datetime
 import logging
 import os
-from pathlib import Path
 import signal
 import sys
 import time
-from typing import Sequence
+from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 
 import cv2
 
@@ -59,27 +59,19 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.environ.get("ROUNDABOUT_CAMERA_URL", DEFAULT_URL),
         help="MJPEG stream URL (default: %(default)s)",
     )
-    parser.add_argument("--headless", action="store_true", help="do not open a GUI window")
+    parser.add_argument(
+        "--headless", action="store_true", help="do not open a GUI window"
+    )
     parser.add_argument(
         "--duration",
         type=positive_float,
         help="exit after this many seconds; useful for headless/soak tests",
     )
-    parser.add_argument(
-        "--reconnect-seconds", type=positive_float, default=2.0
-    )
-    parser.add_argument(
-        "--open-timeout-seconds", type=positive_float, default=5.0
-    )
-    parser.add_argument(
-        "--read-timeout-seconds", type=positive_float, default=5.0
-    )
-    parser.add_argument(
-        "--stale-after-seconds", type=positive_float, default=2.0
-    )
-    parser.add_argument(
-        "--metrics-interval", type=positive_float, default=2.0
-    )
+    parser.add_argument("--reconnect-seconds", type=positive_float, default=2.0)
+    parser.add_argument("--open-timeout-seconds", type=positive_float, default=5.0)
+    parser.add_argument("--read-timeout-seconds", type=positive_float, default=5.0)
+    parser.add_argument("--stale-after-seconds", type=positive_float, default=2.0)
+    parser.add_argument("--metrics-interval", type=positive_float, default=2.0)
     parser.add_argument(
         "--snapshot-directory", type=Path, default=Path("data/snapshots")
     )
@@ -153,7 +145,7 @@ class Recorder:
         height, width = frame.shape[:2]
         writer = cv2.VideoWriter(
             str(path),
-            cv2.VideoWriter_fourcc(*"mp4v"),
+            getattr(cv2, "VideoWriter_fourcc")(*"mp4v"),
             self.fps,
             (width, height),
         )
@@ -294,11 +286,10 @@ def run(args: argparse.Namespace) -> int:
                 if state.first_frame_at is None:
                     state.first_frame_at = now
 
-                if (
-                    args.record_seconds is not None
-                    and not state.auto_record_started
-                ):
-                    path = recorder.start(packet.frame, limit_seconds=args.record_seconds)
+                if args.record_seconds is not None and not state.auto_record_started:
+                    path = recorder.start(
+                        packet.frame, limit_seconds=args.record_seconds
+                    )
                     state.auto_record_started = True
                     print(f"Recording started: {path}", flush=True)
 
@@ -337,7 +328,9 @@ def run(args: argparse.Namespace) -> int:
                 next_metrics_at = now + args.metrics_interval
 
             if not args.headless and state.latest_packet is not None:
-                cv2.imshow(WINDOW_NAME, draw_overlay(state.latest_packet.frame, metrics))
+                cv2.imshow(
+                    WINDOW_NAME, draw_overlay(state.latest_packet.frame, metrics)
+                )
                 key = cv2.waitKey(1) & 0xFF
                 if key in (ord("q"), 27):
                     break
@@ -372,24 +365,31 @@ def run(args: argparse.Namespace) -> int:
             cv2.destroyAllWindows()
         signal.signal(signal.SIGINT, previous_sigint)
         signal.signal(signal.SIGTERM, previous_sigterm)
-        print(format_metrics(
-            store.stats(),
-            consumed_fps=consumed_rate.fps,
-            frame_age_seconds=(
-                None
-                if state.latest_packet is None
-                else max(0.0, time.monotonic() - state.latest_packet.captured_at)
+        print(
+            format_metrics(
+                store.stats(),
+                consumed_fps=consumed_rate.fps,
+                frame_age_seconds=(
+                    None
+                    if state.latest_packet is None
+                    else max(0.0, time.monotonic() - state.latest_packet.captured_at)
+                ),
+                stale_after_seconds=args.stale_after_seconds,
+                recording=False,
             ),
-            stale_after_seconds=args.stale_after_seconds,
-            recording=False,
-        ), flush=True)
+            flush=True,
+        )
     return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.headless is False and sys.platform == "darwin" and not os.environ.get("DISPLAY"):
+    if (
+        args.headless is False
+        and sys.platform == "darwin"
+        and not os.environ.get("DISPLAY")
+    ):
         # Native macOS OpenCV windows do not require DISPLAY. Keep this branch
         # as documentation rather than forcing headless mode.
         pass

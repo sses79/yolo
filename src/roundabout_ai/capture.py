@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from collections import deque
-from dataclasses import dataclass
 import logging
-from threading import Event, Lock, Thread
 import time
-from typing import Callable, Protocol
+from collections import deque
+from collections.abc import Callable
+from dataclasses import dataclass
+from threading import Event, Lock, Thread
+from typing import Protocol, cast
 
 import cv2
 import numpy as np
@@ -19,16 +20,22 @@ Frame = NDArray[np.uint8]
 class VideoCaptureLike(Protocol):
     def isOpened(self) -> bool: ...
 
-    def open(self, source: str) -> bool: ...
+    def open(self, source: str, /) -> bool: ...
 
     def read(self) -> tuple[bool, Frame | None]: ...
 
     def release(self) -> None: ...
 
-    def set(self, prop_id: int, value: float) -> bool: ...
+    def set(self, prop_id: int, value: float, /) -> bool: ...
 
 
 CaptureFactory = Callable[[], VideoCaptureLike]
+
+
+def _opencv_capture_factory() -> VideoCaptureLike:
+    """Narrow OpenCV's broad overloaded type to the methods used here."""
+
+    return cast(VideoCaptureLike, cv2.VideoCapture())
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,7 +176,7 @@ class CameraCapture:
     ) -> None:
         self.config = config
         self.store = store
-        self._capture_factory = capture_factory or cv2.VideoCapture
+        self._capture_factory = capture_factory or _opencv_capture_factory
         self._logger = logger or logging.getLogger(__name__)
         self._stop = Event()
         self._thread: Thread | None = None

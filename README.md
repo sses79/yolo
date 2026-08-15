@@ -195,7 +195,15 @@ useful symptom of a blocked/frozen local pipeline.
 
 ```bash
 .venv/bin/python -m pytest
+.venv/bin/ruff check src tests
+.venv/bin/ruff format --check src tests
+.venv/bin/pyright
 ```
+
+The repository recommends the Ruff, Python, and Pylance VS Code extensions.
+Workspace settings select `.venv` and the shared Ruff configuration;
+`pyproject.toml` sets Pylance/Pyright to `standard` type-checking mode. Pyright
+provides the equivalent type check in the terminal.
 
 See [PROJECT_PLAN.md](PROJECT_PLAN.md) for the dashboard and optional ANPR
 phases. See the
@@ -206,3 +214,6 @@ boundary, live inference flow, performance measurements, and path to tracking.
 The [Phase 2 learning guide](docs/phase-2-learning-guide.md) traces calibration,
 persistent identity, ROI admission, finite-line crossing, deduplication, and the
 remaining live accuracy boundary.
+The [Ruff and Pyright learning guide](docs/ruff-pyright-learning-guide.md)
+explains shared editor/CLI configuration, static contracts, runtime guards, and
+how lint, typing, and tests provide different kinds of evidence.

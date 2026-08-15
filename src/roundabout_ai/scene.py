@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import cv2
 import numpy as np
@@ -21,7 +22,7 @@ class Scene:
     roi: tuple[Point, ...]
     count_lines: tuple[CountLine, ...]
 
-    def scaled(self, width: int, height: int) -> "Scene":
+    def scaled(self, width: int, height: int) -> Scene:
         reference_width, reference_height = self.reference_size
         scale_x = width / reference_width
         scale_y = height / reference_height
