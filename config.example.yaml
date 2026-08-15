@@ -20,3 +20,15 @@ detection:
   confidence: 0.35
   image_size: 640
   classes: [person, bicycle, car, motorcycle, bus, truck]
+
+tracking:
+  tracker_config: "bytetrack.yaml"
+  minimum_track_age: 3
+  maximum_missing_frames: 30
+
+# Generate this section interactively with `roundabout-calibrate`. Coordinates
+# are pixels in the saved reference frame and scale to the live frame size.
+scene:
+  reference_size: [1920, 1080]
+  roi: []
+  count_lines: []

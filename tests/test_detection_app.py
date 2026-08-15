@@ -13,6 +13,9 @@ def test_detection_defaults_match_phase_one_plan() -> None:
     assert args.confidence == 0.35
     assert args.image_size == 640
     assert args.snapshot_on_detection is False
+    assert args.tracker_config == "bytetrack.yaml"
+    assert args.minimum_track_age == 3
+    assert args.scene_config is None
     assert args.classes == (
         "person",
         "bicycle",
@@ -47,3 +50,4 @@ def test_detection_metrics_include_performance_and_counts() -> None:
     assert "inference_fps=12.5" in metrics
     assert "frame_age=95.0ms" in metrics
     assert "objects=car:2,person:1" in metrics
+    assert "crossings=none" in metrics

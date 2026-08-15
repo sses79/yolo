@@ -1,9 +1,9 @@
-"""Phase 1 live vehicle and person detection command."""
+"""Live vehicle/person detection, tracking, ROI filtering, and counting."""
 
 from __future__ import annotations
 
 import argparse
-from collections import deque
+from collections import Counter, deque
 import logging
 import os
 from pathlib import Path
@@ -23,6 +23,14 @@ from roundabout_ai.detector import (
     parse_class_names,
 )
 from roundabout_ai.diagnostic import DEFAULT_URL, draw_overlay, save_snapshot
+from roundabout_ai.geometry import CrossingCounter
+from roundabout_ai.scene import (
+    Scene,
+    annotate_scene,
+    filter_detections_by_roi,
+    load_scene,
+    track_observations,
+)
 
 WINDOW_NAME = "Roundabout AI detection — s snapshot, q quit"
 
@@ -84,6 +92,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", choices=("auto", "cpu", "mps"), default="cpu")
     parser.add_argument("--confidence", type=confidence_value, default=0.35)
     parser.add_argument("--image-size", type=positive_int, default=640)
+    parser.add_argument(
+        "--scene-config",
+        type=Path,
+        help="YAML ROI and count-line calibration from roundabout-calibrate",
+    )
+    parser.add_argument("--tracker-config", default="bytetrack.yaml")
+    parser.add_argument("--minimum-track-age", type=positive_int, default=3)
+    parser.add_argument("--maximum-missing-frames", type=nonnegative_int, default=30)
     parser.add_argument(
         "--classes",
         type=class_names_value,
@@ -162,13 +178,18 @@ def format_detection_metrics(
     overwritten: int,
     device: str,
     counts: dict[str, int],
+    crossings: dict[str, int] | None = None,
 ) -> str:
     counts_text = ",".join(f"{name}:{count}" for name, count in sorted(counts.items())) or "none"
+    crossings_text = ",".join(
+        f"{name}:{count}" for name, count in sorted((crossings or {}).items())
+    ) or "none"
     return (
         f"device={device} capture_fps={capture_fps:.1f} "
         f"inference_fps={inference_fps:.1f} inference={inference_ms:.1f}ms "
         f"frame_age={frame_age_ms:.1f}ms received={received} "
-        f"processed={processed} overwritten={overwritten} objects={counts_text}"
+        f"processed={processed} overwritten={overwritten} objects={counts_text} "
+        f"crossings={crossings_text}"
     )
 
 
@@ -249,7 +270,18 @@ def run_live(args: argparse.Namespace) -> int:
         device=args.device,
         class_names=args.classes,
     )
+    configured_scene = load_scene(args.scene_config) if args.scene_config else None
+    counter: CrossingCounter | None = None
+    counter_size: tuple[int, int] | None = None
     print(f"Model ready on {detector.device}. Camera URL: {args.url}", flush=True)
+    if configured_scene:
+        print(
+            f"Scene ready: roi_points={len(configured_scene.roi)} "
+            f"count_lines={len(configured_scene.count_lines)}",
+            flush=True,
+        )
+    else:
+        print("No scene configuration: tracking enabled, ROI/counting disabled.", flush=True)
 
     store = LatestFrameStore()
     camera = CameraCapture(
@@ -307,13 +339,34 @@ def run_live(args: argparse.Namespace) -> int:
                 time.sleep(0.005)
                 continue
 
-            batch = detector.predict(packet.frame)
+            batch = detector.track(packet.frame, tracker_config=args.tracker_config)
             completed_at = time.monotonic()
             rate.tick(completed_at)
             processed += 1
             if first_inference_at is None:
                 first_inference_at = completed_at
             stats = store.stats(now=completed_at)
+            scene: Scene | None = None
+            detections = batch.detections
+            if configured_scene:
+                scene = configured_scene.scaled(packet.frame.shape[1], packet.frame.shape[0])
+                detections = filter_detections_by_roi(detections, scene.roi)
+            frame_size = (packet.frame.shape[1], packet.frame.shape[0])
+            if counter is None or counter_size != frame_size:
+                counter = CrossingCounter(
+                    scene.count_lines if scene else (),
+                    minimum_track_age=args.minimum_track_age,
+                    maximum_missing_frames=args.maximum_missing_frames,
+                )
+                counter_size = frame_size
+            crossing_events = counter.update(track_observations(detections))
+            for event in crossing_events:
+                print(
+                    f"crossing line={event.line_name} direction={event.direction} "
+                    f"class={event.label} track_id={event.track_id} "
+                    f"confidence={event.confidence:.2f}",
+                    flush=True,
+                )
             latest_metrics = format_detection_metrics(
                 capture_fps=stats.capture_fps,
                 inference_fps=rate.fps,
@@ -323,10 +376,12 @@ def run_live(args: argparse.Namespace) -> int:
                 processed=processed,
                 overwritten=stats.frames_overwritten,
                 device=batch.device,
-                counts=batch.counts,
+                counts=dict(Counter(detection.label for detection in detections)),
+                crossings=counter.counts,
             )
+            scene_frame = annotate_scene(packet.frame, scene) if scene else packet.frame
             latest_annotated = draw_overlay(
-                annotate_detections(packet.frame, batch.detections), latest_metrics
+                annotate_detections(scene_frame, detections), latest_metrics
             )
 
             if completed_at >= next_metrics_at:
@@ -339,7 +394,7 @@ def run_live(args: argparse.Namespace) -> int:
                 and completed_at - first_inference_at >= args.snapshot_after
             )
             detection_snapshot_due = (
-                args.snapshot_on_detection and bool(batch.detections)
+                args.snapshot_on_detection and bool(detections)
             )
             if not snapshot_saved and (timed_snapshot_due or detection_snapshot_due):
                 path = save_snapshot(latest_annotated, args.snapshot_directory)
