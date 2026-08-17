@@ -106,10 +106,14 @@ def render_dashboard() -> None:
             disabled=initial.running,
         )
         save_event_images = st.checkbox(
-            "Save event snapshots",
+            "Save event snapshot and vehicle crops",
             value=False,
             disabled=initial.running,
-            help="Off by default. When enabled, crossing frames are retained locally.",
+            help=(
+                "Off by default. On a crossing, retain the full annotated event "
+                "snapshot plus distinct raw crossing, centred, and sharpest "
+                "vehicle crops locally."
+            ),
         )
 
         st.subheader("Live controls")
@@ -143,6 +147,36 @@ def render_dashboard() -> None:
                 min_value=0,
                 max_value=300,
                 value=30,
+                disabled=initial.running,
+            )
+            event_crop_minimum_width = st.number_input(
+                "Minimum vehicle crop width",
+                min_value=1,
+                max_value=1920,
+                value=200,
+                disabled=initial.running,
+            )
+            event_crop_minimum_height = st.number_input(
+                "Minimum vehicle crop height",
+                min_value=1,
+                max_value=1080,
+                value=100,
+                disabled=initial.running,
+            )
+            event_crop_horizontal_padding = st.number_input(
+                "Horizontal crop padding",
+                min_value=0.0,
+                max_value=0.5,
+                value=0.15,
+                step=0.05,
+                disabled=initial.running,
+            )
+            event_crop_vertical_padding = st.number_input(
+                "Vertical crop padding",
+                min_value=0.0,
+                max_value=0.5,
+                value=0.10,
+                step=0.05,
                 disabled=initial.running,
             )
             refresh_seconds = st.number_input(
@@ -184,6 +218,12 @@ def render_dashboard() -> None:
                         maximum_missing_frames=int(maximum_missing_frames),
                         event_file=Path(event_file),
                         save_event_images=save_event_images,
+                        event_crop_horizontal_padding=float(
+                            event_crop_horizontal_padding
+                        ),
+                        event_crop_vertical_padding=float(event_crop_vertical_padding),
+                        event_crop_minimum_width=int(event_crop_minimum_width),
+                        event_crop_minimum_height=int(event_crop_minimum_height),
                     )
                 )
                 if started:

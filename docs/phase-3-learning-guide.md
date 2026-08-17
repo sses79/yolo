@@ -80,7 +80,7 @@ detection_confidence,plate_text,plate_confidence
 
 The store creates the parent directory and header on the first non-empty batch, appends rows thereafter, and rejects an existing file with a different header. Timestamps are converted to explicit UTC with millisecond precision; naive datetimes are rejected. A lock protects writes made through one store instance.
 
-`plate_text` and `plate_confidence` are reserved for a later, consent-gated ANPR phase and remain blank now. By default, an event stores metadata only. Raw video is never retained by the event store, and an annotated crossing image is saved only when the user explicitly enables event snapshots.
+`plate_text` and `plate_confidence` are reserved for a later, consent-gated ANPR phase and remain blank now. By default, an event stores metadata only. Raw video is never retained by the event store. When the user explicitly enables event images, each crossing saves one full annotated snapshot, while a bounded in-memory selector also saves distinct padded crossing, centred, and sharpest vehicle crops that satisfy a minimum vehicle-box size.
 
 Both `roundabout-detect` and the dashboard use the same event sink. This keeps persistence independent of presentation. The guarantee is intentionally local and single-process: the CSV writer is not a multi-process database lock, and a row proves that software emitted an event, not that a human-labelled review agrees with it.
 
@@ -122,7 +122,7 @@ Streamlit sidebar -> cached DetectionWorker
                                       CrossingCounter
                                   ┌───────────┴───────────┐
                                   v                       v
-                           CsvEventStore          optional snapshot
+                           CsvEventStore     optional snapshot + vehicle crops
                                   │
                                   └──> DashboardState.publish_frame
                                                │
@@ -176,7 +176,7 @@ The tests do not prove:
 - model, tracker, line-crossing, or person-warning accuracy in this scene;
 - safe multi-user semantics if the dashboard is exposed remotely.
 
-The observed live session adds operational evidence: real car crossings were persisted, optional snapshots were written, and capture reconnected after failures correlated with Mac sleep. It still does not replace the Phase 3 one-hour acceptance run or labelled accuracy review.
+The observed live session adds operational evidence: real car crossings were persisted, optional event images were written, and capture reconnected after failures correlated with Mac sleep. The current implementation improves those images by selecting raw best-of-track vehicle crops. This still does not replace the Phase 3 one-hour acceptance run or labelled accuracy review.
 
 ## Try It
 

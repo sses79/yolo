@@ -13,6 +13,7 @@ data/calibration/
 data/recordings/
 data/snapshots/
 data/events/
+data/anpr/
 models/
 *.pt
 *.onnx

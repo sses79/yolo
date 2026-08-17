@@ -35,9 +35,24 @@ scene:
 
 storage:
   save_raw_video: false
+  # Opt-in: save an annotated event snapshot plus distinct raw vehicle crops.
   save_event_images: false
   event_file: "data/events/events.csv"
+  event_crop_horizontal_padding: 0.15
+  event_crop_vertical_padding: 0.10
+  event_crop_minimum_width: 200
+  event_crop_minimum_height: 100
 
 dashboard:
   refresh_seconds: 0.2
   bind_address: "127.0.0.1"
+
+# Phase 4 is a human-labelled camera feasibility gate. These are explicit
+# project policy values, not OCR accuracy guarantees. List only lighting
+# conditions relevant to the intended operating environment.
+anpr_feasibility:
+  minimum_samples: 20
+  minimum_readable_rate: 0.8
+  stop_readable_rate: 0.2
+  minimum_median_character_height_px: 16
+  required_lighting: []
