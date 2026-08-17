@@ -32,3 +32,12 @@ scene:
   reference_size: [1920, 1080]
   roi: []
   count_lines: []
+
+storage:
+  save_raw_video: false
+  save_event_images: false
+  event_file: "data/events/events.csv"
+
+dashboard:
+  refresh_seconds: 0.2
+  bind_address: "127.0.0.1"

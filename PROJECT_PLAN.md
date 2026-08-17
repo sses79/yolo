@@ -242,7 +242,18 @@ exercise is the manual review of at least 100 representative road users.
 
 ### Phase 3 — Events and usable demo
 
-- Write events to CSV or SQLite.
+**Implementation status:** implemented by the `roundabout-dashboard` command
+and the CSV event sink used by both dashboard and detection CLI. A cached,
+long-lived worker owns capture, model inference, tracking, counting, and event
+writes; Streamlit reads locked snapshots on a timed fragment. The UI includes
+start/stop, live confidence and overlay controls, explicit camera health,
+annotated frames, person warnings, metrics, crossing charts, and recent events.
+Storage is metadata-only by default, with event images requiring explicit
+opt-in. Unit/static checks cover CSV serialization, bounded shared state,
+single-worker ownership, dashboard aggregation, and page rendering. The
+remaining acceptance exercise is the one-hour live soak test.
+
+- Write crossing-event metadata to CSV. *(Implemented; SQLite remains optional.)*
 - Add the Streamlit dashboard as the primary user interface.
 - Show the annotated latest frame, connection status, capture/inference FPS, and totals by vehicle type and direction.
 - Show recent events in a table and traffic totals in simple charts.

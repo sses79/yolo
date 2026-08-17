@@ -3,7 +3,8 @@
 Local computer-vision demo using an Android phone running IP Webcam. Phase 0
 provides resilient camera diagnostics, Phase 1 adds local YOLO vehicle/person
 detection, and Phase 2 adds scene calibration, ByteTrack IDs, ROI filtering,
-and directional line-crossing counts.
+and directional line-crossing counts. Phase 3 adds durable CSV events and a
+local Streamlit dashboard.
 
 ## Project setup
 
@@ -54,6 +55,45 @@ Save a snapshot during a headless test:
 ```
 
 Use `--help` for timeout, reconnect, metrics, recording, and output options.
+
+## Phase 3 Streamlit dashboard
+
+Start the primary local dashboard:
+
+```bash
+.venv/bin/roundabout-dashboard
+```
+
+It binds to `127.0.0.1` by default and opens in the browser. The cached
+background worker owns one camera reader and one YOLO model while processing;
+normal Streamlit reruns only read its thread-safe latest snapshot. Use the
+sidebar to:
+
+- start and stop processing cleanly;
+- select the camera, model, device, scene YAML, and event CSV;
+- adjust confidence and toggle detection, scene, and metric overlays live;
+- explicitly opt into event snapshots (off by default).
+
+The timed live panel shows the annotated newest frame, camera and inference
+health, reconnect/failure counters, person warnings, crossing totals, a traffic
+chart, and the most recent events. An `Offline`, `Reconnecting`, or `Error`
+banner includes the latest available cause. CSV metadata is retained locally;
+raw video and event images are not retained by default.
+
+The camera service also runs a wall-clock heartbeat. If all application threads
+pause for at least ten seconds, as happens during Mac sleep, the resumed process
+records the measured gap and resets the stale camera connection:
+
+```text
+system_resume_suspected gap_seconds=958
+camera_connection_reset reason=system_resume
+```
+
+To select another port while keeping the localhost-only bind:
+
+```bash
+.venv/bin/roundabout-dashboard --server.port 8502
+```
 
 ## Phase 1 vehicle and person detection
 
@@ -147,6 +187,13 @@ Run detection with the calibrated scene:
   --scene-config data/calibration/scene.yaml
 ```
 
+Confirmed line crossings are appended as metadata to
+`data/events/events.csv`. Use `--event-file PATH` to select another location.
+The file is created on the first event and contains UTC time, event type, count
+line, object class, direction, track ID, and detection confidence. Plate fields
+are reserved but remain empty; no image or raw video is retained by event
+storage.
+
 The live command now uses Ultralytics ByteTrack with persistent track IDs.
 Detections whose box centre is outside the ROI are excluded. A crossing is
 counted only when the tracked centre moves across the finite line segment,
@@ -169,8 +216,8 @@ count_lines:
 Coordinates are stored against `reference_size` and scaled if the live frame
 size differs. Current cumulative crossing totals are included in periodic
 metrics. Each new crossing is also printed with line, direction, class,
-track ID, and confidence. These are live counters only; Phase 3 adds durable
-event storage and the Streamlit dashboard.
+track ID, and confidence and written to the event CSV. The Phase 3 Streamlit
+dashboard presents the same pipeline through a cached background worker.
 
 Useful tuning options are `--minimum-track-age`, `--maximum-missing-frames`,
 and `--tracker-config`. Run without `--scene-config` to see tracking IDs over
@@ -214,6 +261,9 @@ boundary, live inference flow, performance measurements, and path to tracking.
 The [Phase 2 learning guide](docs/phase-2-learning-guide.md) traces calibration,
 persistent identity, ROI admission, finite-line crossing, deduplication, and the
 remaining live accuracy boundary.
+The [Phase 3 learning guide](docs/phase-3-learning-guide.md) explains durable
+events, single-worker ownership, thread-safe dashboard snapshots, Streamlit
+reruns, and sleep/reconnect evidence.
 The [Ruff and Pyright learning guide](docs/ruff-pyright-learning-guide.md)
 explains shared editor/CLI configuration, static contracts, runtime guards, and
 how lint, typing, and tests provide different kinds of evidence.

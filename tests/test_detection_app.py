@@ -16,6 +16,7 @@ def test_detection_defaults_match_phase_one_plan() -> None:
     assert args.tracker_config == "bytetrack.yaml"
     assert args.minimum_track_age == 3
     assert args.scene_config is None
+    assert args.event_file.as_posix() == "data/events/events.csv"
     assert args.classes == (
         "person",
         "bicycle",

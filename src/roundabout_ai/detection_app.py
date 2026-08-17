@@ -23,6 +23,7 @@ from roundabout_ai.detector import (
     parse_class_names,
 )
 from roundabout_ai.diagnostic import DEFAULT_URL, draw_overlay, save_snapshot
+from roundabout_ai.events import CsvEventStore
 from roundabout_ai.geometry import CrossingCounter
 from roundabout_ai.scene import (
     Scene,
@@ -116,6 +117,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--read-timeout-seconds", type=positive_float, default=5.0)
     parser.add_argument(
         "--snapshot-directory", type=Path, default=Path("data/snapshots")
+    )
+    parser.add_argument(
+        "--event-file",
+        type=Path,
+        default=Path("data/events/events.csv"),
+        help="append crossing-event metadata to this CSV file",
     )
     parser.add_argument(
         "--snapshot-after",
@@ -274,6 +281,7 @@ def run_live(args: argparse.Namespace) -> int:
         class_names=args.classes,
     )
     configured_scene = load_scene(args.scene_config) if args.scene_config else None
+    event_store = CsvEventStore(args.event_file)
     counter: CrossingCounter | None = None
     counter_size: tuple[int, int] | None = None
     print(f"Model ready on {detector.device}. Camera URL: {args.url}", flush=True)
@@ -368,6 +376,7 @@ def run_live(args: argparse.Namespace) -> int:
                 )
                 counter_size = frame_size
             crossing_events = counter.update(track_observations(detections))
+            event_store.write_all(crossing_events)
             for event in crossing_events:
                 print(
                     f"crossing line={event.line_name} direction={event.direction} "
