@@ -1,0 +1,114 @@
+from __future__ import annotations
+
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+from streamlit.testing.v1 import AppTest
+
+import roundabout_ai.dashboard
+from roundabout_ai.dashboard import crossing_chart_rows, event_table_rows
+from roundabout_ai.events import EventRecord
+from roundabout_ai.shared_state import DashboardSnapshot
+
+
+def snapshot() -> DashboardSnapshot:
+    event = EventRecord(
+        "2026-08-15T18:30:01.234Z",
+        "line_crossing",
+        "north",
+        "car",
+        "entering",
+        7,
+        0.9,
+    )
+    return DashboardSnapshot(
+        running=True,
+        status="live",
+        status_message=None,
+        latest_frame=None,
+        started_at="2026-08-15T18:00:00+00:00",
+        capture_fps=25.0,
+        inference_fps=12.0,
+        inference_ms=80.0,
+        frame_age_ms=95.0,
+        frames_received=100,
+        frames_processed=40,
+        frames_overwritten=59,
+        read_failures=0,
+        reconnects=0,
+        object_counts={"car": 1},
+        crossing_counts={
+            "north:entering:car": 2,
+            "south:entering:car": 1,
+            "north:leaving:bus": 1,
+        },
+        recent_events=(event,),
+        person_visible=False,
+    )
+
+
+def test_dashboard_rows_aggregate_crossings_and_serialize_events() -> None:
+    current = snapshot()
+
+    assert crossing_chart_rows(current) == [
+        {"category": "bus · leaving", "count": 1},
+        {"category": "car · entering", "count": 3},
+    ]
+    assert event_table_rows(current)[0]["track_id"] == 7
+
+
+def test_streamlit_page_renders_without_starting_camera() -> None:
+    module_path = Path(roundabout_ai.dashboard.__file__)
+    app = AppTest.from_file(module_path.with_name("dashboard_app.py"))
+
+    app.run(timeout=10)
+
+    assert not app.exception
+    assert app.title[0].value == "Roundabout AI"
+    assert app.button[0].label == "Start"
+
+
+def test_start_rerun_enables_stop_button(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeWorker:
+        def __init__(self) -> None:
+            self.running = False
+
+        def snapshot(self) -> DashboardSnapshot:
+            return replace(
+                snapshot(),
+                running=self.running,
+                status="live" if self.running else "stopped",
+            )
+
+        def set_controls(self, _controls: object) -> None:
+            pass
+
+        def start(self, _config: object) -> bool:
+            self.running = True
+            return True
+
+        def stop(self) -> bool:
+            self.running = False
+            return True
+
+    fake_worker = FakeWorker()
+    monkeypatch.setattr(roundabout_ai.dashboard, "get_worker", lambda: fake_worker)
+    module_path = Path(roundabout_ai.dashboard.__file__)
+    app = AppTest.from_file(module_path.with_name("dashboard_app.py"))
+
+    app.run(timeout=10)
+    assert app.button[0].disabled is False
+    assert app.button[1].disabled is True
+
+    app.button[0].click().run(timeout=10)
+
+    assert app.button[0].disabled is True
+    assert app.button[1].disabled is False
+
+    app.button[1].click().run(timeout=10)
+
+    assert app.button[0].disabled is False
+    assert app.button[1].disabled is True

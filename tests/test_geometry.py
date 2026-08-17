@@ -27,15 +27,11 @@ def test_line_geometry_uses_order_and_finite_segments() -> None:
     assert signed_side((5.0, 2.0), (0.0, 0.0), (10.0, 0.0)) > 0
     assert signed_side((5.0, -2.0), (0.0, 0.0), (10.0, 0.0)) < 0
     assert segments_intersect((5.0, -2.0), (5.0, 2.0), (0.0, 0.0), (10.0, 0.0))
-    assert not segments_intersect(
-        (15.0, -2.0), (15.0, 2.0), (0.0, 0.0), (10.0, 0.0)
-    )
+    assert not segments_intersect((15.0, -2.0), (15.0, 2.0), (0.0, 0.0), (10.0, 0.0))
 
 
 def test_crossing_is_directional_and_counted_once_per_track_line() -> None:
-    line = CountLine(
-        "entry", (0.0, 0.0), (10.0, 0.0), "entering", "leaving"
-    )
+    line = CountLine("entry", (0.0, 0.0), (10.0, 0.0), "entering", "leaving")
     counter = CrossingCounter((line,), minimum_track_age=2)
 
     assert counter.update((observation(7, (5.0, -2.0)),)) == ()
@@ -54,17 +50,15 @@ def test_crossing_rejects_young_track_and_line_extension() -> None:
     counter = CrossingCounter((line,), minimum_track_age=3)
 
     counter.update((observation(1, (5.0, -1.0)), observation(2, (15.0, -1.0))))
-    assert counter.update(
-        (observation(1, (5.0, 1.0)), observation(2, (15.0, 1.0)))
-    ) == ()
+    assert (
+        counter.update((observation(1, (5.0, 1.0)), observation(2, (15.0, 1.0)))) == ()
+    )
     assert counter.counts == {}
 
 
 def test_expired_track_id_starts_a_new_lifecycle() -> None:
     line = CountLine("entry", (0.0, 0.0), (10.0, 0.0))
-    counter = CrossingCounter(
-        (line,), minimum_track_age=2, maximum_missing_frames=1
-    )
+    counter = CrossingCounter((line,), minimum_track_age=2, maximum_missing_frames=1)
     counter.update((observation(4, (5.0, -1.0)),))
     counter.update(())
     counter.update(())

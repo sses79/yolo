@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import ClassVar
+
 import numpy as np
 import pytest
 
@@ -17,7 +19,7 @@ class FakeTensor:
     def __init__(self, values: list[object]) -> None:
         self.values = values
 
-    def cpu(self) -> "FakeTensor":
+    def cpu(self) -> FakeTensor:
         return self
 
     def tolist(self) -> list[object]:
@@ -25,9 +27,10 @@ class FakeTensor:
 
 
 class FakeBoxes:
-    xyxy = FakeTensor([[10.2, 20.4, 100.6, 120.8]])
-    conf = FakeTensor([0.876])
-    cls = FakeTensor([2.0])
+    xyxy: ClassVar = FakeTensor([[10.2, 20.4, 100.6, 120.8]])
+    conf: ClassVar = FakeTensor([0.876])
+    cls: ClassVar = FakeTensor([2.0])
+    id: FakeTensor | None = None
 
 
 class FakeResult:
@@ -35,9 +38,8 @@ class FakeResult:
 
 
 class FakeModel:
-    names = {0: "person", 1: "bicycle", 2: "car"}
-
     def __init__(self) -> None:
+        self.names = {0: "person", 1: "bicycle", 2: "car"}
         self.calls: list[dict[str, object]] = []
 
     def predict(self, **kwargs: object) -> list[FakeResult]:
@@ -73,9 +75,11 @@ def test_yolo_detector_adapts_model_results() -> None:
 
     assert batch.device == "cpu"
     assert batch.counts == {"car": 1}
-    assert batch.detections == (
-        Detection(2, "car", pytest.approx(0.876), (10, 20, 101, 121)),
-    )
+    assert len(batch.detections) == 1
+    assert batch.detections[0].class_id == 2
+    assert batch.detections[0].label == "car"
+    assert batch.detections[0].confidence == pytest.approx(0.876)
+    assert batch.detections[0].xyxy == (10, 20, 101, 121)
     assert model.calls[0]["source"] is frame
     assert model.calls[0]["classes"] == [0, 2]
     assert model.calls[0]["conf"] == 0.4

@@ -1,18 +1,22 @@
 from __future__ import annotations
 
+import logging
 import time
 
 import numpy as np
+import pytest
 
 from roundabout_ai.capture import (
     CameraCapture,
     CaptureConfig,
     ConsumptionRate,
+    Frame,
     LatestFrameStore,
+    ResumeGapDetector,
 )
 
 
-def frame(value: int = 0) -> np.ndarray:
+def frame(value: int = 0) -> Frame:
     return np.full((2, 3, 3), value, dtype=np.uint8)
 
 
@@ -74,6 +78,33 @@ def test_consumption_rate() -> None:
     assert meter.fps == 4.0
 
 
+def test_resume_gap_detector_reports_only_large_wall_clock_jump() -> None:
+    times = iter((100.0, 101.0, 105.0, 1063.4, 1064.0))
+    detector = ResumeGapDetector(10.0, clock=lambda: next(times))
+
+    assert detector.observe() is None
+    assert detector.observe() is None
+    assert detector.observe() == pytest.approx(958.4)
+    assert detector.observe() is None
+
+
+def test_camera_records_resume_evidence_and_requests_reset(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    camera = CameraCapture(
+        CaptureConfig(url="http://camera.invalid/video"),
+        LatestFrameStore(),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        camera._record_system_resume(958.7)
+        assert camera._consume_resume_reconnect()
+
+    assert "system_resume_suspected gap_seconds=958" in caplog.text
+    assert "camera_connection_reset reason=system_resume" in caplog.text
+    assert not camera._consume_resume_reconnect()
+
+
 def test_camera_retries_after_open_failure_and_publishes_frame() -> None:
     created = 0
 
@@ -93,7 +124,7 @@ def test_camera_retries_after_open_failure_and_publishes_frame() -> None:
         def isOpened(self) -> bool:
             return self.opened
 
-        def read(self):
+        def read(self) -> tuple[bool, Frame | None]:
             self.reads += 1
             if self.reads == 1:
                 return True, frame(9)

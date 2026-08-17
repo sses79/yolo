@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from collections import Counter
-from dataclasses import dataclass
 import statistics
 import time
-from typing import Callable, Iterable, Protocol, Sequence
+from collections import Counter
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from typing import Protocol, cast
 
 import cv2
-import numpy as np
 
 from roundabout_ai.capture import Frame
 
@@ -24,7 +24,8 @@ ROAD_USER_CLASSES = (
 
 
 class ModelLike(Protocol):
-    names: dict[int, str] | list[str]
+    @property
+    def names(self) -> Mapping[int, str] | Sequence[str]: ...
 
     def predict(self, **kwargs: object) -> Sequence[object]: ...
 
@@ -66,7 +67,9 @@ class BenchmarkResult:
 
 
 def parse_class_names(value: str) -> tuple[str, ...]:
-    names = tuple(dict.fromkeys(name.strip().lower() for name in value.split(",") if name.strip()))
+    names = tuple(
+        dict.fromkeys(name.strip().lower() for name in value.split(",") if name.strip())
+    )
     if not names:
         raise ValueError("at least one detection class is required")
     return names
@@ -105,12 +108,25 @@ def _as_list(value: object) -> list[object]:
         value = cpu()
     tolist = getattr(value, "tolist", None)
     if callable(tolist):
-        return list(tolist())
-    return list(value)  # type: ignore[arg-type]
+        converted = tolist()
+        if isinstance(converted, Iterable):
+            return list(converted)
+        raise TypeError("tensor tolist() result is not iterable")
+    if isinstance(value, Iterable):
+        return list(value)
+    raise TypeError("model output is not iterable")
 
 
-def _normalized_names(names: dict[int, str] | list[str]) -> dict[int, str]:
-    if isinstance(names, dict):
+def _number(value: object) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    raise TypeError(f"model output is not numeric: {type(value).__name__}")
+
+
+def _normalized_names(
+    names: Mapping[int, str] | Sequence[str],
+) -> dict[int, str]:
+    if isinstance(names, Mapping):
         return {int(class_id): str(label) for class_id, label in names.items()}
     return {class_id: str(label) for class_id, label in enumerate(names)}
 
@@ -135,14 +151,15 @@ class YoloDetector:
         if model_factory is None:
             from ultralytics import YOLO
 
-            model_factory = YOLO
+            self._model = cast(ModelLike, YOLO(model_path))
+        else:
+            self._model = model_factory(model_path)
 
         self.model_path = model_path
         self.confidence = confidence
         self.image_size = image_size
         self.device = resolve_device(device)
         self.class_names = tuple(dict.fromkeys(name.lower() for name in class_names))
-        self._model = model_factory(model_path)
         self._names = _normalized_names(self._model.names)
         wanted = set(self.class_names)
         self._class_ids = tuple(
@@ -153,7 +170,9 @@ class YoloDetector:
         found = {self._names[class_id].lower() for class_id in self._class_ids}
         missing = sorted(wanted - found)
         if missing:
-            raise ValueError(f"model does not provide requested classes: {', '.join(missing)}")
+            raise ValueError(
+                f"model does not provide requested classes: {', '.join(missing)}"
+            )
 
     def _run(
         self,
@@ -196,15 +215,24 @@ class YoloDetector:
                 for coordinates_row, confidence, class_id, track_id in zip(
                     coordinates, confidences, class_ids, track_ids, strict=True
                 ):
-                    numeric_class_id = int(class_id)
-                    x1, y1, x2, y2 = (int(round(float(value))) for value in coordinates_row)
+                    if not isinstance(coordinates_row, Sequence):
+                        raise TypeError("model box coordinates are not a sequence")
+                    coordinate_values = tuple(
+                        round(_number(value)) for value in coordinates_row
+                    )
+                    if len(coordinate_values) != 4:
+                        raise ValueError("model box must contain four coordinates")
+                    numeric_class_id = int(_number(class_id))
+                    x1, y1, x2, y2 = coordinate_values
                     detections.append(
                         Detection(
                             class_id=numeric_class_id,
                             label=self._names[numeric_class_id],
-                            confidence=float(confidence),
+                            confidence=_number(confidence),
                             xyxy=(x1, y1, x2, y2),
-                            track_id=None if track_id is None else int(track_id),
+                            track_id=None
+                            if track_id is None
+                            else int(_number(track_id)),
                         )
                     )
         return DetectionBatch(tuple(detections), elapsed, self.device)
@@ -231,7 +259,9 @@ def benchmark_detector(
         raise ValueError("warmup runs must be nonnegative and measured runs positive")
     for _ in range(warmup_runs):
         detector.predict(frame)
-    samples = [detector.predict(frame).elapsed_seconds * 1000 for _ in range(measured_runs)]
+    samples = [
+        detector.predict(frame).elapsed_seconds * 1000 for _ in range(measured_runs)
+    ]
     mean_ms = statistics.fmean(samples)
     return BenchmarkResult(
         device=detector.device,

@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import argparse
-from collections import Counter, deque
 import logging
 import os
-from pathlib import Path
 import signal
 import time
-from typing import Sequence
+from collections import Counter, deque
+from collections.abc import Sequence
+from pathlib import Path
 
 import cv2
 
@@ -23,6 +23,7 @@ from roundabout_ai.detector import (
     parse_class_names,
 )
 from roundabout_ai.diagnostic import DEFAULT_URL, draw_overlay, save_snapshot
+from roundabout_ai.events import CsvEventStore
 from roundabout_ai.geometry import CrossingCounter
 from roundabout_ai.scene import (
     Scene,
@@ -71,7 +72,9 @@ def class_names_value(value: str) -> tuple[str, ...]:
 
 
 def benchmark_devices_value(value: str) -> tuple[str, ...]:
-    devices = tuple(dict.fromkeys(item.strip().lower() for item in value.split(",") if item.strip()))
+    devices = tuple(
+        dict.fromkeys(item.strip().lower() for item in value.split(",") if item.strip())
+    )
     invalid = sorted(set(devices) - {"cpu", "mps"})
     if not devices or invalid:
         suffix = f": {', '.join(invalid)}" if invalid else ""
@@ -116,6 +119,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--snapshot-directory", type=Path, default=Path("data/snapshots")
     )
     parser.add_argument(
+        "--event-file",
+        type=Path,
+        default=Path("data/events/events.csv"),
+        help="append crossing-event metadata to this CSV file",
+    )
+    parser.add_argument(
         "--snapshot-after",
         type=positive_float,
         help="save one annotated snapshot this many seconds after first inference",
@@ -137,9 +146,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--benchmark-warmup", type=nonnegative_int, default=2)
     parser.add_argument("--benchmark-runs", type=positive_int, default=10)
-    parser.add_argument(
-        "--first-frame-timeout", type=positive_float, default=15.0
-    )
+    parser.add_argument("--first-frame-timeout", type=positive_float, default=15.0)
     parser.add_argument(
         "--log-level",
         choices=("DEBUG", "INFO", "WARNING", "ERROR"),
@@ -180,10 +187,13 @@ def format_detection_metrics(
     counts: dict[str, int],
     crossings: dict[str, int] | None = None,
 ) -> str:
-    counts_text = ",".join(f"{name}:{count}" for name, count in sorted(counts.items())) or "none"
-    crossings_text = ",".join(
-        f"{name}:{count}" for name, count in sorted((crossings or {}).items())
-    ) or "none"
+    counts_text = (
+        ",".join(f"{name}:{count}" for name, count in sorted(counts.items())) or "none"
+    )
+    crossings_text = (
+        ",".join(f"{name}:{count}" for name, count in sorted((crossings or {}).items()))
+        or "none"
+    )
     return (
         f"device={device} capture_fps={capture_fps:.1f} "
         f"inference_fps={inference_fps:.1f} inference={inference_ms:.1f}ms "
@@ -271,6 +281,7 @@ def run_live(args: argparse.Namespace) -> int:
         class_names=args.classes,
     )
     configured_scene = load_scene(args.scene_config) if args.scene_config else None
+    event_store = CsvEventStore(args.event_file)
     counter: CrossingCounter | None = None
     counter_size: tuple[int, int] | None = None
     print(f"Model ready on {detector.device}. Camera URL: {args.url}", flush=True)
@@ -281,7 +292,10 @@ def run_live(args: argparse.Namespace) -> int:
             flush=True,
         )
     else:
-        print("No scene configuration: tracking enabled, ROI/counting disabled.", flush=True)
+        print(
+            "No scene configuration: tracking enabled, ROI/counting disabled.",
+            flush=True,
+        )
 
     store = LatestFrameStore()
     camera = CameraCapture(
@@ -349,7 +363,9 @@ def run_live(args: argparse.Namespace) -> int:
             scene: Scene | None = None
             detections = batch.detections
             if configured_scene:
-                scene = configured_scene.scaled(packet.frame.shape[1], packet.frame.shape[0])
+                scene = configured_scene.scaled(
+                    packet.frame.shape[1], packet.frame.shape[0]
+                )
                 detections = filter_detections_by_roi(detections, scene.roi)
             frame_size = (packet.frame.shape[1], packet.frame.shape[0])
             if counter is None or counter_size != frame_size:
@@ -360,6 +376,7 @@ def run_live(args: argparse.Namespace) -> int:
                 )
                 counter_size = frame_size
             crossing_events = counter.update(track_observations(detections))
+            event_store.write_all(crossing_events)
             for event in crossing_events:
                 print(
                     f"crossing line={event.line_name} direction={event.direction} "
@@ -393,9 +410,7 @@ def run_live(args: argparse.Namespace) -> int:
                 and first_inference_at is not None
                 and completed_at - first_inference_at >= args.snapshot_after
             )
-            detection_snapshot_due = (
-                args.snapshot_on_detection and bool(detections)
-            )
+            detection_snapshot_due = args.snapshot_on_detection and bool(detections)
             if not snapshot_saved and (timed_snapshot_due or detection_snapshot_due):
                 path = save_snapshot(latest_annotated, args.snapshot_directory)
                 snapshot_saved = True
@@ -420,7 +435,10 @@ def run_live(args: argparse.Namespace) -> int:
             cv2.destroyAllWindows()
         signal.signal(signal.SIGINT, previous_sigint)
         signal.signal(signal.SIGTERM, previous_sigterm)
-        print(f"Stopped after processing {processed} frames. Last metrics: {latest_metrics}", flush=True)
+        print(
+            f"Stopped after processing {processed} frames. Last metrics: {latest_metrics}",
+            flush=True,
+        )
     return 0
 
 

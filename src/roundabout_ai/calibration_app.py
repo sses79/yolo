@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import os
-from pathlib import Path
 import time
-from typing import Sequence
+from collections.abc import Sequence
+from itertools import pairwise
+from pathlib import Path
+from typing import cast
 
 import cv2
 
@@ -25,7 +27,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--url", default=os.environ.get("ROUNDABOUT_CAMERA_URL", DEFAULT_URL)
     )
-    parser.add_argument("--image", type=Path, help="use an existing image instead of the camera")
+    parser.add_argument(
+        "--image", type=Path, help="use an existing image instead of the camera"
+    )
     parser.add_argument(
         "--reference-image",
         type=Path,
@@ -108,7 +112,7 @@ def draw_session(frame: Frame, session: CalibrationSession) -> Frame:
     roi_points = [(round(x), round(y)) for x, y in session.roi]
     for point in roi_points:
         cv2.circle(display, point, 5, (0, 255, 255), -1)
-    for start, end in zip(roi_points, roi_points[1:]):
+    for start, end in pairwise(roi_points):
         cv2.line(display, start, end, (0, 255, 255), 2)
     if session.mode == "lines" and len(roi_points) >= 3:
         cv2.line(display, roi_points[-1], roi_points[0], (0, 255, 255), 2)
@@ -144,9 +148,10 @@ def draw_session(frame: Frame, session: CalibrationSession) -> Frame:
 
 def run(args: argparse.Namespace) -> int:
     if args.image:
-        frame = cv2.imread(str(args.image))
-        if frame is None:
+        loaded = cv2.imread(str(args.image))
+        if loaded is None:
             raise ValueError(f"could not read image: {args.image}")
+        frame = cast(Frame, loaded)
     else:
         frame = capture_reference(args.url, args.first_frame_timeout)
     args.reference_image.parent.mkdir(parents=True, exist_ok=True)

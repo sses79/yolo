@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from collections import deque
-from dataclasses import dataclass
 import logging
-from threading import Event, Lock, Thread
 import time
-from typing import Callable, Protocol
+from collections import deque
+from collections.abc import Callable
+from dataclasses import dataclass
+from threading import Event, Lock, Thread
+from typing import Protocol, cast
 
 import cv2
 import numpy as np
@@ -19,16 +20,23 @@ Frame = NDArray[np.uint8]
 class VideoCaptureLike(Protocol):
     def isOpened(self) -> bool: ...
 
-    def open(self, source: str) -> bool: ...
+    def open(self, source: str, /) -> bool: ...
 
     def read(self) -> tuple[bool, Frame | None]: ...
 
     def release(self) -> None: ...
 
-    def set(self, prop_id: int, value: float) -> bool: ...
+    def set(self, prop_id: int, value: float, /) -> bool: ...
 
 
 CaptureFactory = Callable[[], VideoCaptureLike]
+WallClock = Callable[[], float]
+
+
+def _opencv_capture_factory() -> VideoCaptureLike:
+    """Narrow OpenCV's broad overloaded type to the methods used here."""
+
+    return cast(VideoCaptureLike, cv2.VideoCapture())
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +162,30 @@ class CaptureConfig:
     open_timeout_seconds: float = 5.0
     read_timeout_seconds: float = 5.0
     failures_before_reconnect: int = 2
+    resume_gap_seconds: float = 10.0
+    resume_check_seconds: float = 1.0
+
+
+class ResumeGapDetector:
+    """Detect when wall-clock progress jumps between heartbeat observations."""
+
+    def __init__(
+        self,
+        threshold_seconds: float,
+        *,
+        clock: WallClock = time.time,
+    ) -> None:
+        if threshold_seconds <= 0:
+            raise ValueError("resume gap threshold must be positive")
+        self.threshold_seconds = threshold_seconds
+        self._clock = clock
+        self._last_observed_at = clock()
+
+    def observe(self) -> float | None:
+        observed_at = self._clock()
+        gap = observed_at - self._last_observed_at
+        self._last_observed_at = observed_at
+        return gap if gap >= self.threshold_seconds else None
 
 
 class CameraCapture:
@@ -166,20 +198,33 @@ class CameraCapture:
         *,
         capture_factory: CaptureFactory | None = None,
         logger: logging.Logger | None = None,
+        wall_clock: WallClock = time.time,
     ) -> None:
+        if config.resume_check_seconds <= 0:
+            raise ValueError("resume check interval must be positive")
         self.config = config
         self.store = store
-        self._capture_factory = capture_factory or cv2.VideoCapture
+        self._capture_factory = capture_factory or _opencv_capture_factory
         self._logger = logger or logging.getLogger(__name__)
+        self._wall_clock = wall_clock
         self._stop = Event()
+        self._resume_reconnect = Event()
         self._thread: Thread | None = None
+        self._heartbeat_thread: Thread | None = None
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop.clear()
+        self._resume_reconnect.clear()
         self._thread = Thread(target=self._run, name="camera-capture", daemon=True)
+        self._heartbeat_thread = Thread(
+            target=self._monitor_system_resume,
+            name="system-resume-monitor",
+            daemon=True,
+        )
         self._thread.start()
+        self._heartbeat_thread.start()
 
     def stop(self, *, timeout: float = 7.0) -> None:
         self._stop.set()
@@ -187,6 +232,10 @@ class CameraCapture:
             self._thread.join(timeout=timeout)
             if self._thread.is_alive():
                 self._logger.warning("capture thread did not stop before timeout")
+        if self._heartbeat_thread is not None:
+            self._heartbeat_thread.join(timeout=min(timeout, 2.0))
+            if self._heartbeat_thread.is_alive():
+                self._logger.warning("resume monitor did not stop before timeout")
         self.store.set_status("stopped")
 
     @property
@@ -208,9 +257,34 @@ class CameraCapture:
         capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         return capture
 
+    def _record_system_resume(self, gap_seconds: float) -> None:
+        self._logger.warning("system_resume_suspected gap_seconds=%d", int(gap_seconds))
+        self._resume_reconnect.set()
+
+    def _monitor_system_resume(self) -> None:
+        detector = ResumeGapDetector(
+            self.config.resume_gap_seconds,
+            clock=self._wall_clock,
+        )
+        while not self._stop.wait(self.config.resume_check_seconds):
+            gap_seconds = detector.observe()
+            if gap_seconds is not None:
+                self._record_system_resume(gap_seconds)
+
+    def _consume_resume_reconnect(self) -> bool:
+        if not self._resume_reconnect.is_set():
+            return False
+        self._resume_reconnect.clear()
+        self._logger.warning("camera_connection_reset reason=system_resume")
+        self.store.set_status(
+            "reconnecting", "system resume detected; resetting camera connection"
+        )
+        return True
+
     def _run(self) -> None:
         first_attempt = True
         while not self._stop.is_set():
+            self._consume_resume_reconnect()
             self.store.set_status("connecting")
             capture = self._new_capture()
             try:
@@ -231,7 +305,11 @@ class CameraCapture:
                 consecutive_failures = 0
 
                 while not self._stop.is_set():
+                    if self._consume_resume_reconnect():
+                        break
                     ok, frame = capture.read()
+                    if self._consume_resume_reconnect():
+                        break
                     if ok and frame is not None and frame.size > 0:
                         consecutive_failures = 0
                         self.store.publish(frame)
