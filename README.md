@@ -4,7 +4,8 @@ Local computer-vision demo using an Android phone running IP Webcam. Phase 0
 provides resilient camera diagnostics, Phase 1 adds local YOLO vehicle/person
 detection, and Phase 2 adds scene calibration, ByteTrack IDs, ROI filtering,
 and directional line-crossing counts. Phase 3 adds durable CSV events and a
-local Streamlit dashboard.
+local Streamlit dashboard. Phase 4 adds the evidence gate that decides whether
+the camera view is suitable for a later ANPR prototype.
 
 ## Project setup
 
@@ -72,13 +73,28 @@ sidebar to:
 - start and stop processing cleanly;
 - select the camera, model, device, scene YAML, and event CSV;
 - adjust confidence and toggle detection, scene, and metric overlays live;
-- explicitly opt into event snapshots (off by default).
+- explicitly opt into event snapshots and best-of-track vehicle crops (off by
+  default).
 
 The timed live panel shows the annotated newest frame, camera and inference
 health, reconnect/failure counters, person warnings, crossing totals, a traffic
 chart, and the most recent events. An `Offline`, `Reconnecting`, or `Error`
 banner includes the latest available cause. CSV metadata is retained locally;
 raw video and event images are not retained by default.
+
+When **Save event snapshot and vehicle crops** is enabled, every confirmed
+crossing saves one full annotated `snapshot` frame. The worker also temporarily
+retains a bounded set of raw vehicle crops for each live track and saves
+distinct candidates for the exact `crossing` frame, the most complete
+`centred` vehicle view, and the `sharpest` vehicle view. Vehicle boxes receive
+15% horizontal and 10% vertical padding, and candidates close enough to an
+image edge to lose that padding are marked clipped. Boxes smaller than 200x100
+pixels are excluded from the crop set; the full event snapshot is still saved.
+If one crop wins more than one category, it is saved only once. Raw crops are
+taken before drawing detection boxes, ROI lines, or metrics. All files are
+written under `data/events/images/` with the track ID and image kind in the
+filename. The crop padding and minimum dimensions can be changed under
+**Advanced** before starting processing.
 
 The camera service also runs a wall-clock heartbeat. If all application threads
 pause for at least ten seconds, as happens during Mac sleep, the resumed process
@@ -94,6 +110,80 @@ To select another port while keeping the localhost-only bind:
 ```bash
 .venv/bin/roundabout-dashboard --server.port 8502
 ```
+
+## Phase 4 ANPR feasibility gate
+
+Phase 4 does not run OCR. It first tests whether this camera view contains
+enough readable plate pixels to justify an ANPR prototype.
+
+The best starting sample is produced by running `roundabout-dashboard` with
+**Save event snapshot and vehicle crops** enabled. For each crossing, inspect the
+`crossing`, `centred`, and `sharpest` files under `data/events/images/` and use
+the most readable candidate as one vehicle observation. Do not count all three
+as independent samples because they belong to the same tracked vehicle.
+
+Create a local CSV template:
+
+```bash
+.venv/bin/roundabout-anpr-assess init
+```
+
+This creates `data/anpr/annotations.csv`. Add one row per consent-appropriate
+local image with:
+
+- an anonymous sample ID and local image path;
+- approaching/departing direction, lighting, slow/fast/unknown speed, and
+  front/rear;
+- `yes`, `no`, or `uncertain` human readability;
+- approximate plate width, plate height, and character height in pixels;
+- optional quality notes such as blur, glare, skew, or clipping.
+
+There is intentionally no registration-text column. Images, annotations, and
+reports under `data/anpr/` are ignored by Git.
+
+Append a validated observation without editing CSV directly:
+
+```bash
+.venv/bin/roundabout-anpr-assess add \
+  --sample-id sample-001 \
+  --image-path data/anpr/images/sample-001.jpg \
+  --direction approaching \
+  --lighting day \
+  --speed slow \
+  --plate-side front \
+  --human-readable yes \
+  --plate-width 92 \
+  --plate-height 25 \
+  --character-height 18
+```
+
+Use `--notes "motion blur"` for relevant quality observations. The `add`
+command creates the template automatically if it does not exist and rejects a
+duplicate sample ID.
+
+Generate the evidence report:
+
+```bash
+.venv/bin/roundabout-anpr-assess report \
+  --required-lighting day,shade,glare
+```
+
+The default policy requires at least 20 samples, both directions, both speed
+groups, and both plate sides. It recommends `proceed` only when at least 80%
+are human-readable and median character height is at least 16 pixels;
+readability below 20% recommends `stop_at_vehicle_analytics`, while intermediate
+results recommend `reposition_first`. Missing quantity or condition coverage
+returns `incomplete_sample`. Override these thresholds on the command line when
+the project has a documented reason; they are feasibility policy, not an OCR
+accuracy guarantee.
+
+Use `speed=unknown` when a still image has no trustworthy speed evidence. Such
+rows remain valid observations, but they do not satisfy the report's required
+slow/fast coverage.
+
+Typical improvements before collecting a new sample are a lower camera angle,
+closer optical view, more light, or a faster shutter. OCR remains Phase 5 and
+should begin only after reviewing `data/anpr/report.md`.
 
 ## Phase 1 vehicle and person detection
 

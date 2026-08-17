@@ -170,6 +170,10 @@ storage:
   save_raw_video: false
   save_event_images: false
   event_file: "data/events/events.csv"
+  event_crop_horizontal_padding: 0.15
+  event_crop_vertical_padding: 0.10
+  event_crop_minimum_width: 200
+  event_crop_minimum_height: 100
 
 anpr:
   enabled: false
@@ -249,8 +253,11 @@ writes; Streamlit reads locked snapshots on a timed fragment. The UI includes
 start/stop, live confidence and overlay controls, explicit camera health,
 annotated frames, person warnings, metrics, crossing charts, and recent events.
 Storage is metadata-only by default, with event images requiring explicit
-opt-in. Unit/static checks cover CSV serialization, bounded shared state,
-single-worker ownership, dashboard aggregation, and page rendering. The
+opt-in. Each confirmed event saves a full annotated snapshot; the crop selector
+also keeps bounded, padded raw crossing, centred, and sharpest candidates per
+vehicle and saves distinct, sufficiently large candidates only after a confirmed crossing. Unit/static
+checks cover CSV serialization, bounded shared
+state, single-worker ownership, dashboard aggregation, and page rendering. The
 remaining acceptance exercise is the one-hour live soak test.
 
 - Write crossing-event metadata to CSV. *(Implemented; SQLite remains optional.)*
@@ -262,7 +269,8 @@ remaining acceptance exercise is the one-hour live soak test.
 - Cache the model/worker as a resource so normal page reruns do not reload model weights or create duplicate camera readers.
 - Add clean shutdown, structured logs, and clear offline/reconnecting status.
 - Default to metadata-only storage.
-- Add optional event snapshots only when explicitly enabled.
+- Add an optional full event snapshot plus raw best-of-track vehicle crops only
+  when explicitly enabled.
 
 Suggested event fields:
 
@@ -274,6 +282,16 @@ detection_confidence, plate_text, plate_confidence
 **Exit criteria:** restartable one-hour local Streamlit demo with stable counts, bounded memory use, no duplicate workers after UI interaction, and no raw-video retention by default.
 
 ### Phase 4 — ANPR feasibility gate
+
+**Implementation status:** implemented by `roundabout-anpr-assess`. The command
+creates a local annotation CSV, validates sample quantity and coverage, and
+generates a Markdown evidence report with a configurable `proceed`,
+`reposition_first`, `stop_at_vehicle_analytics`, or `incomplete_sample`
+recommendation. It records image references, viewing conditions, human
+readability, and approximate plate/character pixel sizes, but deliberately has
+no registration-text field. The decision thresholds are visible project policy,
+not claims about OCR accuracy. Completing the gate still requires collecting and
+reviewing a real consent-appropriate local sample.
 
 Before building OCR, collect a consent-appropriate local sample covering:
 

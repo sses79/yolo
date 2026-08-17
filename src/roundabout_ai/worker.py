@@ -25,7 +25,12 @@ from roundabout_ai.detector import (
     YoloDetector,
     annotate_detections,
 )
-from roundabout_ai.diagnostic import draw_overlay, save_snapshot
+from roundabout_ai.diagnostic import draw_overlay
+from roundabout_ai.event_images import (
+    VehicleCandidateBuffer,
+    save_event_candidates,
+    save_event_snapshot,
+)
 from roundabout_ai.events import CsvEventStore
 from roundabout_ai.geometry import CrossingCounter
 from roundabout_ai.scene import (
@@ -56,6 +61,10 @@ class ProcessingConfig:
     event_file: Path = Path("data/events/events.csv")
     save_event_images: bool = False
     event_image_directory: Path = Path("data/events/images")
+    event_crop_horizontal_padding: float = 0.15
+    event_crop_vertical_padding: float = 0.10
+    event_crop_minimum_width: int = 200
+    event_crop_minimum_height: int = 100
 
     def __post_init__(self) -> None:
         if not self.url.strip():
@@ -68,6 +77,13 @@ class ProcessingConfig:
             raise ValueError("minimum track age must be positive")
         if self.maximum_missing_frames < 0:
             raise ValueError("maximum missing frames must be nonnegative")
+        if (
+            self.event_crop_horizontal_padding < 0
+            or self.event_crop_vertical_padding < 0
+        ):
+            raise ValueError("event crop padding must be nonnegative")
+        if self.event_crop_minimum_width <= 0 or self.event_crop_minimum_height <= 0:
+            raise ValueError("minimum event crop dimensions must be positive")
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,6 +264,17 @@ class DetectionWorker:
         processed = 0
         counter: CrossingCounter | None = None
         counter_size: tuple[int, int] | None = None
+        candidate_buffer = (
+            VehicleCandidateBuffer(
+                maximum_missing_frames=config.maximum_missing_frames,
+                horizontal_padding_ratio=config.event_crop_horizontal_padding,
+                vertical_padding_ratio=config.event_crop_vertical_padding,
+                minimum_vehicle_width=config.event_crop_minimum_width,
+                minimum_vehicle_height=config.event_crop_minimum_height,
+            )
+            if config.save_event_images
+            else None
+        )
 
         while not self._stop.is_set():
             packet = frame_store.consume_latest()
@@ -266,6 +293,8 @@ class DetectionWorker:
             width, height = packet.frame.shape[1], packet.frame.shape[0]
             scene = configured_scene.scaled(width, height) if configured_scene else None
             detections = batch.detections
+            if candidate_buffer is not None:
+                candidate_buffer.observe(packet.frame, detections)
             if scene:
                 detections = filter_detections_by_roi(detections, scene.roi)
 
@@ -294,9 +323,48 @@ class DetectionWorker:
                         f"processed={processed} crossings={sum(counter.counts.values())}"
                     ),
                 )
-            if event_records and config.save_event_images:
-                path = save_snapshot(annotated, config.event_image_directory)
-                self._logger.info("event_snapshot_saved path=%s", path)
+            if candidate_buffer is not None:
+                for record in event_records:
+                    snapshot_path = save_event_snapshot(
+                        annotated,
+                        config.event_image_directory,
+                        record,
+                    )
+                    self._logger.info(
+                        "event_snapshot_saved path=%s track_id=%d",
+                        snapshot_path,
+                        record.track_id,
+                    )
+                    candidates = candidate_buffer.select(record.track_id)
+                    if not candidates:
+                        self._logger.info(
+                            "event_candidates_skipped track_id=%d reason=no_suitable_crop "
+                            "minimum_width=%d minimum_height=%d",
+                            record.track_id,
+                            config.event_crop_minimum_width,
+                            config.event_crop_minimum_height,
+                        )
+                    paths = save_event_candidates(
+                        candidates,
+                        config.event_image_directory,
+                        record,
+                    )
+                    for (kind, candidate), path in zip(candidates, paths, strict=True):
+                        self._logger.info(
+                            "event_candidate_saved path=%s kind=%s track_id=%d "
+                            "width=%d height=%d source_width=%d source_height=%d "
+                            "sharpness=%.1f clipped=%s edge_clearance=%d",
+                            path,
+                            kind,
+                            record.track_id,
+                            candidate.crop.shape[1],
+                            candidate.crop.shape[0],
+                            candidate.source_width,
+                            candidate.source_height,
+                            candidate.sharpness,
+                            candidate.clipped,
+                            candidate.edge_clearance,
+                        )
 
             for record in event_records:
                 self._logger.info(
