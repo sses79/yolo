@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -19,6 +20,7 @@ DEFAULT_HORIZONTAL_PADDING_RATIO = 0.15
 DEFAULT_VERTICAL_PADDING_RATIO = 0.10
 DEFAULT_MINIMUM_VEHICLE_WIDTH = 200
 DEFAULT_MINIMUM_VEHICLE_HEIGHT = 100
+DEFAULT_PREVIEW_WIDTH = 240
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,6 +234,36 @@ def _event_path(
 def _save_jpeg(frame: Frame, path: Path) -> None:
     if not cv2.imwrite(str(path), frame, [cv2.IMWRITE_JPEG_QUALITY, 95]):
         raise RuntimeError(f"OpenCV failed to save event image to {path}")
+
+
+def event_preview_data_url(
+    frame: Frame,
+    *,
+    maximum_width: int = DEFAULT_PREVIEW_WIDTH,
+    jpeg_quality: int = 75,
+) -> str:
+    """Encode one bounded JPEG thumbnail for Streamlit's image column."""
+
+    if maximum_width <= 0:
+        raise ValueError("preview maximum width must be positive")
+    if not 1 <= jpeg_quality <= 100:
+        raise ValueError("preview JPEG quality must be between 1 and 100")
+    height, width = frame.shape[:2]
+    preview = frame
+    if width > maximum_width:
+        scale = maximum_width / width
+        preview = cv2.resize(
+            frame,
+            (maximum_width, max(1, round(height * scale))),
+            interpolation=cv2.INTER_AREA,
+        )
+    encoded, buffer = cv2.imencode(
+        ".jpg", preview, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality]
+    )
+    if not encoded:
+        raise RuntimeError("OpenCV failed to encode event preview")
+    payload = base64.b64encode(buffer.tobytes()).decode("ascii")
+    return f"data:image/jpeg;base64,{payload}"
 
 
 def save_event_snapshot(

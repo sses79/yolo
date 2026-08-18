@@ -78,7 +78,10 @@ sidebar to:
 
 The timed live panel shows the annotated newest frame, camera and inference
 health, reconnect/failure counters, person warnings, crossing totals, a traffic
-chart, and the most recent events. An `Offline`, `Reconnecting`, or `Error`
+chart, and the most recent events. Recent events include `slow`, `fast`, or
+`unknown` plus the measured relative speed. When event-image saving is enabled,
+the table also shows a compact crossing-crop preview after the timestamp. An
+`Offline`, `Reconnecting`, or `Error`
 banner includes the latest available cause. CSV metadata is retained locally;
 raw video and event images are not retained by default.
 
@@ -95,6 +98,17 @@ taken before drawing detection boxes, ROI lines, or metrics. All files are
 written under `data/events/images/` with the track ID and image kind in the
 filename. The crop padding and minimum dimensions can be changed under
 **Advanced** before starting processing.
+
+For a speed-labelled re-collection, leave the default speed settings initially
+and enable event images. The worker measures bottom-centre motion using real
+capture timestamps and divides it by vehicle-box height, producing relative
+`box heights/second`. A track remains `unknown` until it has at least three
+observations spanning 0.5 seconds; values at or above the default `1.0`
+threshold are `fast`, and lower values are `slow`. Tune the threshold under
+**Advanced** after reviewing representative tracks. This supports sample
+stratification but is not mph or km/h; physical speed requires road-plane and
+distance calibration. Existing Phase 3 CSV files are upgraded in place with
+`unknown` for historical rows when the next event is written.
 
 The camera service also runs a wall-clock heartbeat. If all application threads
 pause for at least ten seconds, as happens during Mac sleep, the resumed process
@@ -184,6 +198,71 @@ slow/fast coverage.
 Typical improvements before collecting a new sample are a lower camera angle,
 closer optical view, more light, or a faster shutter. OCR remains Phase 5 and
 should begin only after reviewing `data/anpr/report.md`.
+
+## Phase 5 offline local ANPR prototype
+
+Phase 5 analyzes the vehicle crops already saved under `data/events/images/`.
+It does not connect to the live stream or alter `events.csv`. Supply a local
+YOLO model trained to detect number plates; `yolo26n.pt` is a general COCO road
+user model and cannot be substituted for a plate detector.
+
+First verify the Python 3.14 OCR installation and PP-OCRv6 small recognizer:
+
+```bash
+.venv/bin/roundabout-anpr smoke-test
+```
+
+Run the gated prototype with the class name exposed by your plate model:
+
+```bash
+.venv/bin/roundabout-anpr run \
+  --plate-model models/license-plate.pt \
+  --plate-class license_plate
+```
+
+The command refuses to run unless Phase 4 recommends `proceed`. The current
+sample may be explored while it is only `incomplete_sample` with
+`--allow-incomplete-feasibility`; that override cannot bypass a `reposition`
+or `stop` recommendation.
+
+For each tracked crossing, the prototype detects plates only within the saved
+vehicle candidates, rejects small/blurred/skewed/clipped crops, OCRs at most the
+three strongest distinct frames, and accepts a plate only when at least two
+good observations agree. It uses one long-lived RapidOCR instance in
+recognition-only mode. Results remain `uncertain` or `no_read` when evidence is
+weak.
+
+Console and JSON results redact registration text by default. Explicit local
+debugging requires `--store-text`; do not publish that output. To write a
+redacted local report:
+
+```bash
+.venv/bin/roundabout-anpr run \
+  --plate-model models/license-plate.pt \
+  --output data/anpr/run.json
+```
+
+Held-out evaluation labels are a local, ignored CSV with exactly this header:
+
+```csv
+vehicle_id,expected_text
+20260817-152243-332697+0100-track-7-line_1,AB12CDE
+```
+
+Use the redacted run output to obtain vehicle IDs, keep labelled vehicles out of
+tuning, and calculate aggregate metrics:
+
+```bash
+.venv/bin/roundabout-anpr evaluate \
+  --plate-model models/license-plate.pt \
+  --labels data/anpr/held-out.csv \
+  --output data/anpr/evaluation.json
+```
+
+The evaluation reports exact-plate accuracy, mean character accuracy, no-read
+rate, and false-read rate without writing expected or observed plate text. All
+models, images, labels, and reports remain under ignored local paths. The
+optional PaddleOCR-VL fallback is intentionally not part of this baseline.
 
 ## Phase 1 vehicle and person detection
 
@@ -280,7 +359,8 @@ Run detection with the calibrated scene:
 Confirmed line crossings are appended as metadata to
 `data/events/events.csv`. Use `--event-file PATH` to select another location.
 The file is created on the first event and contains UTC time, event type, count
-line, object class, direction, track ID, and detection confidence. Plate fields
+line, object class, direction, track ID, detection confidence, and relative
+speed class/value. Plate fields
 are reserved but remain empty; no image or raw video is retained by event
 storage.
 
@@ -310,7 +390,9 @@ track ID, and confidence and written to the event CSV. The Phase 3 Streamlit
 dashboard presents the same pipeline through a cached background worker.
 
 Useful tuning options are `--minimum-track-age`, `--maximum-missing-frames`,
-and `--tracker-config`. Run without `--scene-config` to see tracking IDs over
+`--fast-speed-threshold`, `--minimum-speed-observations`,
+`--minimum-speed-duration-seconds`, and `--tracker-config`. Run without
+`--scene-config` to see tracking IDs over
 the whole frame without filtering or counting.
 
 ## Metrics

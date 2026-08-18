@@ -25,6 +25,10 @@ tracking:
   tracker_config: "bytetrack.yaml"
   minimum_track_age: 3
   maximum_missing_frames: 30
+  # Relative image motion; this is not mph or km/h.
+  fast_speed_threshold_box_heights_per_second: 1.0
+  minimum_speed_observations: 3
+  minimum_speed_duration_seconds: 0.5
 
 # Generate this section interactively with `roundabout-calibrate`. Coordinates
 # are pixels in the saved reference frame and scale to the live frame size.
@@ -56,3 +60,21 @@ anpr_feasibility:
   stop_readable_rate: 0.2
   minimum_median_character_height_px: 16
   required_lighting: []
+
+# Phase 5 runs offline over saved vehicle crops and stays disabled until a
+# plate-specific YOLO model is supplied. The general yolo26n.pt COCO model is
+# not a plate detector. Registration text is neither shown nor stored by default.
+anpr_prototype:
+  enabled: false
+  plate_model: "models/license-plate.pt"
+  plate_class: "license_plate"
+  detector_confidence: 0.35
+  image_size: 640
+  minimum_plate_size: [64, 16]
+  minimum_sharpness: 40.0
+  maximum_skew_degrees: 15.0
+  maximum_ocr_candidates: 3
+  minimum_ocr_confidence: 0.5
+  minimum_agreement: 2
+  require_uk_format: true
+  store_plate_text: false

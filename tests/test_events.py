@@ -49,6 +49,8 @@ def test_csv_event_store_appends_stable_metadata_rows(tmp_path: Path) -> None:
             "detection_confidence": "0.876543",
             "plate_text": "",
             "plate_confidence": "",
+            "speed_class": "unknown",
+            "normalized_speed": "",
         },
         {
             "timestamp": "2026-08-15T18:30:01.234Z",
@@ -60,6 +62,8 @@ def test_csv_event_store_appends_stable_metadata_rows(tmp_path: Path) -> None:
             "detection_confidence": "0.876543",
             "plate_text": "",
             "plate_confidence": "",
+            "speed_class": "unknown",
+            "normalized_speed": "",
         },
     ]
 
@@ -79,6 +83,19 @@ def test_csv_event_store_rejects_an_incompatible_existing_file(
 
     with pytest.raises(ValueError, match="unexpected CSV header"):
         CsvEventStore(path).write_all((crossing_event(),))
+
+
+def test_csv_event_store_upgrades_legacy_event_file(tmp_path: Path) -> None:
+    path = tmp_path / "events.csv"
+    legacy_header = EVENT_FIELDS[:-2]
+    path.write_text(",".join(legacy_header) + "\n", encoding="utf-8")
+
+    CsvEventStore(path).write_all((crossing_event(),))
+
+    with path.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.reader(handle))
+    assert tuple(rows[0]) == EVENT_FIELDS
+    assert rows[1][-2:] == ["unknown", ""]
 
 
 def test_timestamp_requires_timezone_and_schema_has_unique_fields() -> None:

@@ -45,6 +45,19 @@ def test_crossing_is_directional_and_counted_once_per_track_line() -> None:
     assert counter.counts == {"entry:entering:car": 1}
 
 
+def test_crossing_carries_track_speed_estimate() -> None:
+    line = CountLine("entry", (0.0, 0.0), (10.0, 0.0))
+    counter = CrossingCounter((line,), minimum_track_age=2)
+    counter.update((observation(7, (5.0, -2.0)),))
+
+    events = counter.update(
+        (TrackObservation(7, "car", 0.9, (5.0, 2.0), "fast", 1.25),)
+    )
+
+    assert events[0].speed_class == "fast"
+    assert events[0].normalized_speed == 1.25
+
+
 def test_crossing_rejects_young_track_and_line_extension() -> None:
     line = CountLine("entry", (0.0, 0.0), (10.0, 0.0))
     counter = CrossingCounter((line,), minimum_track_age=3)

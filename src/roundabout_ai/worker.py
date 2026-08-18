@@ -7,7 +7,7 @@ import logging
 import time
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Event, Lock, Thread, current_thread
 from typing import Protocol
@@ -28,6 +28,7 @@ from roundabout_ai.detector import (
 from roundabout_ai.diagnostic import draw_overlay
 from roundabout_ai.event_images import (
     VehicleCandidateBuffer,
+    event_preview_data_url,
     save_event_candidates,
     save_event_snapshot,
 )
@@ -41,6 +42,7 @@ from roundabout_ai.scene import (
     track_observations,
 )
 from roundabout_ai.shared_state import DashboardSnapshot, DashboardState
+from roundabout_ai.speed import TrackSpeedEstimator
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +57,9 @@ class ProcessingConfig:
     tracker_config: str = "bytetrack.yaml"
     minimum_track_age: int = 3
     maximum_missing_frames: int = 30
+    fast_speed_threshold: float = 1.0
+    minimum_speed_observations: int = 3
+    minimum_speed_duration_seconds: float = 0.5
     reconnect_seconds: float = 2.0
     open_timeout_seconds: float = 5.0
     read_timeout_seconds: float = 5.0
@@ -77,6 +82,12 @@ class ProcessingConfig:
             raise ValueError("minimum track age must be positive")
         if self.maximum_missing_frames < 0:
             raise ValueError("maximum missing frames must be nonnegative")
+        if self.fast_speed_threshold <= 0:
+            raise ValueError("fast speed threshold must be positive")
+        if self.minimum_speed_observations < 2:
+            raise ValueError("minimum speed observations must be at least 2")
+        if self.minimum_speed_duration_seconds <= 0:
+            raise ValueError("minimum speed duration must be positive")
         if (
             self.event_crop_horizontal_padding < 0
             or self.event_crop_vertical_padding < 0
@@ -264,6 +275,11 @@ class DetectionWorker:
         processed = 0
         counter: CrossingCounter | None = None
         counter_size: tuple[int, int] | None = None
+        speed_estimator = TrackSpeedEstimator(
+            fast_threshold=config.fast_speed_threshold,
+            minimum_observations=config.minimum_speed_observations,
+            minimum_duration_seconds=config.minimum_speed_duration_seconds,
+        )
         candidate_buffer = (
             VehicleCandidateBuffer(
                 maximum_missing_frames=config.maximum_missing_frames,
@@ -293,6 +309,9 @@ class DetectionWorker:
             width, height = packet.frame.shape[1], packet.frame.shape[0]
             scene = configured_scene.scaled(width, height) if configured_scene else None
             detections = batch.detections
+            speed_estimates = speed_estimator.update(
+                detections, captured_at=packet.captured_at
+            )
             if candidate_buffer is not None:
                 candidate_buffer.observe(packet.frame, detections)
             if scene:
@@ -306,7 +325,9 @@ class DetectionWorker:
                     maximum_missing_frames=config.maximum_missing_frames,
                 )
                 counter_size = frame_size
-            crossing_events = counter.update(track_observations(detections))
+            crossing_events = counter.update(
+                track_observations(detections, speed_estimates)
+            )
             event_records = event_store.write_all(crossing_events)
 
             annotated = packet.frame
@@ -323,8 +344,9 @@ class DetectionWorker:
                         f"processed={processed} crossings={sum(counter.counts.values())}"
                     ),
                 )
+            dashboard_records = list(event_records)
             if candidate_buffer is not None:
-                for record in event_records:
+                for record_index, record in enumerate(event_records):
                     snapshot_path = save_event_snapshot(
                         annotated,
                         config.event_image_directory,
@@ -336,6 +358,18 @@ class DetectionWorker:
                         record.track_id,
                     )
                     candidates = candidate_buffer.select(record.track_id)
+                    preview_frame = next(
+                        (
+                            candidate.crop
+                            for kind, candidate in candidates
+                            if kind == "crossing"
+                        ),
+                        annotated,
+                    )
+                    dashboard_records[record_index] = replace(
+                        record,
+                        preview_image=event_preview_data_url(preview_frame),
+                    )
                     if not candidates:
                         self._logger.info(
                             "event_candidates_skipped track_id=%d reason=no_suitable_crop "
@@ -368,12 +402,19 @@ class DetectionWorker:
 
             for record in event_records:
                 self._logger.info(
-                    "crossing_event line=%s direction=%s class=%s track_id=%d confidence=%.3f",
+                    "crossing_event line=%s direction=%s class=%s track_id=%d "
+                    "confidence=%.3f speed=%s normalized_speed=%s",
                     record.line_name,
                     record.direction,
                     record.object_class,
                     record.track_id,
                     record.detection_confidence,
+                    record.speed_class,
+                    (
+                        "unknown"
+                        if record.normalized_speed is None
+                        else f"{record.normalized_speed:.3f}"
+                    ),
                 )
             self.state.publish_frame(
                 annotated,
@@ -384,5 +425,5 @@ class DetectionWorker:
                 frames_processed=processed,
                 object_counts=Counter(detection.label for detection in detections),
                 crossing_counts=counter.counts,
-                events=event_records,
+                events=tuple(dashboard_records),
             )

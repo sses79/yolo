@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -9,6 +10,7 @@ import numpy as np
 from roundabout_ai.detector import Detection
 from roundabout_ai.event_images import (
     VehicleCandidateBuffer,
+    event_preview_data_url,
     save_event_candidates,
     save_event_snapshot,
 )
@@ -147,6 +149,21 @@ def test_save_event_snapshot_preserves_full_annotated_frame(tmp_path: Path) -> N
     saved = cv2.imread(str(path))
     assert saved is not None
     assert saved.shape == frame.shape
+
+
+def test_event_preview_is_a_bounded_jpeg_data_url() -> None:
+    frame = np.full((100, 400, 3), 93, dtype=np.uint8)
+
+    preview = event_preview_data_url(frame, maximum_width=200)
+
+    assert preview.startswith("data:image/jpeg;base64,")
+    encoded = preview.removeprefix("data:image/jpeg;base64,")
+    decoded = cv2.imdecode(
+        np.frombuffer(base64.b64decode(encoded), dtype=np.uint8),
+        cv2.IMREAD_COLOR,
+    )
+    assert decoded is not None
+    assert decoded.shape[:2] == (50, 200)
 
 
 def test_buffer_pads_crops_marks_edges_and_rejects_small_vehicle_boxes() -> None:

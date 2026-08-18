@@ -252,6 +252,9 @@ long-lived worker owns capture, model inference, tracking, counting, and event
 writes; Streamlit reads locked snapshots on a timed fragment. The UI includes
 start/stop, live confidence and overlay controls, explicit camera health,
 annotated frames, person warnings, metrics, crossing charts, and recent events.
+Recent events and CSV rows also carry a timestamp-based relative speed class
+(`slow`, `fast`, or `unknown`) and normalized box-heights-per-second value for
+sample re-collection; this is explicitly not a physical road-speed estimate.
 Storage is metadata-only by default, with event images requiring explicit
 opt-in. Each confirmed event saves a full annotated snapshot; the crop selector
 also keeps bounded, padded raw crossing, centred, and sharpest candidates per
@@ -276,7 +279,7 @@ Suggested event fields:
 
 ```text
 timestamp, event_type, object_class, direction, track_id,
-detection_confidence, plate_text, plate_confidence
+detection_confidence, plate_text, plate_confidence, speed_class, normalized_speed
 ```
 
 **Exit criteria:** restartable one-hour local Streamlit demo with stable counts, bounded memory use, no duplicate workers after UI interaction, and no raw-video retention by default.
@@ -309,6 +312,15 @@ For a labelled sample, record whether a human can read each plate and measure th
 This gate prevents spending time tuning OCR against unusable source images.
 
 ### Phase 5 — Optional local ANPR prototype
+
+**Implementation status:** implemented as the offline `roundabout-anpr`
+prototype. It requires the Phase 4 gate and a user-supplied plate-specific YOLO
+model; the general COCO vehicle model is deliberately rejected by class-name
+validation. The command groups saved Phase 3 candidates by tracked crossing,
+quality-gates plate detections, reuses one RapidOCR PP-OCRv6 small instance,
+and reports conservative multi-frame consensus. Registration text is redacted
+by default. The optional PaddleOCR-VL fallback remains an extension point and
+is not enabled in this local baseline.
 
 - Detect a plate only inside a tracked vehicle crop.
 - Reject plates that are too small, blurred, highly skewed, or partly outside the frame.

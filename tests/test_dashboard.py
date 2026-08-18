@@ -21,6 +21,9 @@ def snapshot() -> DashboardSnapshot:
         "entering",
         7,
         0.9,
+        speed_class="fast",
+        normalized_speed=1.25,
+        preview_image="data:image/jpeg;base64,preview",
     )
     return DashboardSnapshot(
         running=True,
@@ -56,6 +59,13 @@ def test_dashboard_rows_aggregate_crossings_and_serialize_events() -> None:
         {"category": "car · entering", "count": 3},
     ]
     assert event_table_rows(current)[0]["track_id"] == 7
+    assert event_table_rows(current)[0]["direction"] == "entering"
+    assert event_table_rows(current)[0]["speed_class"] == "fast"
+    assert event_table_rows(current)[0]["normalized_speed"] == 1.25
+    assert (
+        event_table_rows(current)[0]["preview_image"]
+        == "data:image/jpeg;base64,preview"
+    )
 
 
 def test_streamlit_page_renders_without_starting_camera() -> None:

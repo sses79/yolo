@@ -21,7 +21,10 @@ EVENT_FIELDS = (
     "detection_confidence",
     "plate_text",
     "plate_confidence",
+    "speed_class",
+    "normalized_speed",
 )
+LEGACY_EVENT_FIELDS = EVENT_FIELDS[:-2]
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +38,9 @@ class EventRecord:
     detection_confidence: float
     plate_text: str = ""
     plate_confidence: float | None = None
+    speed_class: str = "unknown"
+    normalized_speed: float | None = None
+    preview_image: str | None = None
 
     def csv_row(self) -> tuple[str, ...]:
         return (
@@ -47,17 +53,22 @@ class EventRecord:
             f"{self.detection_confidence:.6f}",
             self.plate_text,
             "" if self.plate_confidence is None else f"{self.plate_confidence:.6f}",
+            self.speed_class,
+            "" if self.normalized_speed is None else f"{self.normalized_speed:.6f}",
         )
 
     def as_dict(self) -> dict[str, str | int | float | None]:
         return {
             "timestamp": self.timestamp,
+            "preview_image": self.preview_image,
             "event_type": self.event_type,
             "line_name": self.line_name,
             "object_class": self.object_class,
             "direction": self.direction,
             "track_id": self.track_id,
             "detection_confidence": self.detection_confidence,
+            "speed_class": self.speed_class,
+            "normalized_speed": self.normalized_speed,
             "plate_text": self.plate_text,
             "plate_confidence": self.plate_confidence,
         }
@@ -111,6 +122,8 @@ class CsvEventStore:
                 event.direction,
                 event.track_id,
                 event.confidence,
+                speed_class=event.speed_class,
+                normalized_speed=event.normalized_speed,
             )
             for event in pending
         )
@@ -121,10 +134,8 @@ class CsvEventStore:
                 with self.path.open("a+", encoding="utf-8", newline="") as handle:
                     handle.seek(0)
                     existing_header = next(csv.reader(handle), None)
-                    if (
-                        existing_header is not None
-                        and tuple(existing_header) != EVENT_FIELDS
-                    ):
+                    header = tuple(existing_header) if existing_header else None
+                    if header not in {None, EVENT_FIELDS, LEGACY_EVENT_FIELDS}:
                         raise ValueError(
                             f"event file has an unexpected CSV header: {self.path}"
                         )
@@ -132,6 +143,14 @@ class CsvEventStore:
                     writer = csv.writer(handle)
                     if existing_header is None:
                         writer.writerow(EVENT_FIELDS)
+                    if header == LEGACY_EVENT_FIELDS:
+                        handle.seek(0)
+                        legacy_rows = list(csv.reader(handle))[1:]
+                        handle.seek(0)
+                        handle.truncate()
+                        writer.writerow(EVENT_FIELDS)
+                        writer.writerows((*row, "unknown", "") for row in legacy_rows)
+                    handle.seek(0, 2)
                     writer.writerows(record.csv_row() for record in records)
         except OSError as exc:
             raise RuntimeError(

@@ -149,6 +149,33 @@ def render_dashboard() -> None:
                 value=30,
                 disabled=initial.running,
             )
+            fast_speed_threshold = st.number_input(
+                "Fast threshold (box heights/second)",
+                min_value=0.05,
+                max_value=20.0,
+                value=1.0,
+                step=0.05,
+                disabled=initial.running,
+                help=(
+                    "Relative image speed, not mph or km/h. Recalibrate this value "
+                    "against your re-collected tracks."
+                ),
+            )
+            minimum_speed_observations = st.number_input(
+                "Minimum speed observations",
+                min_value=2,
+                max_value=30,
+                value=3,
+                disabled=initial.running,
+            )
+            minimum_speed_duration_seconds = st.number_input(
+                "Minimum speed duration (seconds)",
+                min_value=0.1,
+                max_value=5.0,
+                value=0.5,
+                step=0.1,
+                disabled=initial.running,
+            )
             event_crop_minimum_width = st.number_input(
                 "Minimum vehicle crop width",
                 min_value=1,
@@ -216,6 +243,11 @@ def render_dashboard() -> None:
                         scene_config=Path(scene_path) if scene_path.strip() else None,
                         minimum_track_age=int(minimum_track_age),
                         maximum_missing_frames=int(maximum_missing_frames),
+                        fast_speed_threshold=float(fast_speed_threshold),
+                        minimum_speed_observations=int(minimum_speed_observations),
+                        minimum_speed_duration_seconds=float(
+                            minimum_speed_duration_seconds
+                        ),
                         event_file=Path(event_file),
                         save_event_images=save_event_images,
                         event_crop_horizontal_padding=float(
@@ -294,7 +326,37 @@ def render_dashboard() -> None:
         st.subheader("Recent events")
         rows = event_table_rows(snapshot)
         if rows:
-            st.dataframe(rows, hide_index=True, width="stretch")
+            st.dataframe(
+                rows,
+                column_order=(
+                    "timestamp",
+                    "preview_image",
+                    "object_class",
+                    "direction",
+                    "speed_class",
+                    "normalized_speed",
+                    "line_name",
+                    "track_id",
+                    "detection_confidence",
+                ),
+                column_config={
+                    "preview_image": st.column_config.ImageColumn(
+                        "Crossing image",
+                        width="small",
+                        help=(
+                            "Raw crossing crop when suitable; annotated event "
+                            "snapshot otherwise. Available when event images are enabled."
+                        ),
+                    ),
+                    "direction": "Crossing direction",
+                    "speed_class": "Speed class",
+                    "normalized_speed": st.column_config.NumberColumn(
+                        "Relative speed", format="%.2f"
+                    ),
+                },
+                hide_index=True,
+                width="stretch",
+            )
         else:
             st.caption(
                 "Events will appear after a tracked object crosses a count line."
