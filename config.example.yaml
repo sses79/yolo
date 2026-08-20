@@ -19,6 +19,9 @@ camera_adaptation:
   minimum_profile_dwell_seconds: 300.0
   failed_switch_cooldown_seconds: 60.0
   capabilities_file: "data/camera/capabilities.json"
+  # Optional Phase 7 mapping; copy and complete camera_profiles.example.json.
+  validated_profiles_file: null
+  minimum_profile_samples: 30
   automatic_confirmed: false
 
 diagnostic:

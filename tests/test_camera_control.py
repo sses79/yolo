@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -10,6 +11,8 @@ from roundabout_ai.camera_control import (
     CameraControlError,
     CameraPreset,
     IpWebcamControlClient,
+    identify_camera_profile,
+    load_validated_profile_mapping,
 )
 
 
@@ -93,3 +96,74 @@ def test_client_rolls_back_when_readback_does_not_match() -> None:
         client.apply_preset(CameraPreset("day", (("focusmode", "continuous-video"),)))
 
     assert len(writes) == 2
+
+
+def test_identifies_verified_preset_after_worker_restart() -> None:
+    current = {
+        "manual_sensor": "off",
+        "night_vision": "off",
+        "focusmode": "continuous-video",
+        "scenemode": "night",
+        "whitebalance": "auto",
+        "iso": "50",
+    }
+
+    assert identify_camera_profile(current) == "night"
+    assert identify_camera_profile({**current, "scenemode": "portrait"}) is None
+
+
+def validated_mapping_payload() -> dict[str, object]:
+    return {
+        "version": 1,
+        "conditions": {
+            condition: {
+                "profile": profile,
+                "sample_count": 40,
+                "operator_approved": True,
+                "ocr_acceptance_rate": 0.6,
+                "baseline_ocr_acceptance_rate": 0.5,
+                "held_out_false_read_rate": 0.02,
+                "baseline_held_out_false_read_rate": 0.03,
+            }
+            for condition, profile in {
+                "day": "day",
+                "glare": "glare",
+                "dusk": "day",
+                "night": "dusk",
+            }.items()
+        },
+    }
+
+
+def test_loads_only_evidence_backed_operator_approved_profile_mapping(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "profiles.json"
+    path.write_text(json.dumps(validated_mapping_payload()), encoding="utf-8")
+
+    mapping = load_validated_profile_mapping(path)
+
+    assert mapping["night"] == "dusk"
+    assert mapping["dusk"] == "day"
+
+
+def test_rejects_profile_mapping_with_weak_samples_or_regressed_false_reads(
+    tmp_path: Path,
+) -> None:
+    payload = validated_mapping_payload()
+    conditions = payload["conditions"]
+    assert isinstance(conditions, dict)
+    night = conditions["night"]
+    assert isinstance(night, dict)
+    night["sample_count"] = 5
+    path = tmp_path / "profiles.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(CameraControlError, match="requires 30"):
+        load_validated_profile_mapping(path)
+
+    night["sample_count"] = 40
+    night["held_out_false_read_rate"] = 0.04
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(CameraControlError, match="increases held-out false reads"):
+        load_validated_profile_mapping(path)

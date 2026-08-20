@@ -79,6 +79,10 @@ def test_pipeline_uses_multiple_good_vehicle_crops_for_consensus(
     assert analysis.result.status is PlateStatus.ACCEPTED
     assert analysis.result.agreement == 3
     assert len(recognizer.image_ids) == 3
+    assert analysis.best_detector_confidence == 0.9
+    assert analysis.best_plate_width == 150
+    assert analysis.best_plate_height == 40
+    assert analysis.best_plate_sharpness is not None
 
 
 def test_pipeline_analyzes_live_in_memory_vehicle_crops() -> None:

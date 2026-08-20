@@ -334,3 +334,99 @@ CAMERA_PRESETS: Mapping[str, CameraPreset] = {
         ),
     ),
 }
+
+
+def identify_camera_profile(current: Mapping[str, str]) -> str | None:
+    """Return the uniquely matching preset for verified camera read-back state."""
+
+    matches = tuple(
+        name
+        for name, preset in CAMERA_PRESETS.items()
+        if all(
+            setting in current and _equivalent(current[setting], value, setting)
+            for setting, value in preset.settings
+        )
+    )
+    return matches[0] if len(matches) == 1 else None
+
+
+def load_validated_profile_mapping(
+    path: Path, *, minimum_samples: int = 30
+) -> dict[str, str]:
+    """Load an explicitly approved condition-to-profile mapping."""
+
+    if minimum_samples <= 0:
+        raise ValueError("minimum profile samples must be positive")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise CameraControlError(
+            f"could not read validated profile mapping: {exc}"
+        ) from exc
+    except ValueError as exc:
+        raise CameraControlError(
+            f"validated profile mapping is not JSON: {exc}"
+        ) from exc
+    if not isinstance(payload, dict) or payload.get("version") != 1:
+        raise CameraControlError("validated profile mapping must use version 1")
+    conditions = payload.get("conditions")
+    if not isinstance(conditions, dict):
+        raise CameraControlError("validated profile mapping is missing conditions")
+    missing = set(CAMERA_PRESETS) - set(conditions)
+    if missing:
+        raise CameraControlError(
+            "validated profile mapping is missing conditions: "
+            + ", ".join(sorted(missing))
+        )
+    mapping: dict[str, str] = {}
+    for condition in CAMERA_PRESETS:
+        evidence = conditions[condition]
+        if not isinstance(evidence, dict):
+            raise CameraControlError(
+                f"mapping evidence for {condition} must be an object"
+            )
+        profile = evidence.get("profile")
+        if profile not in CAMERA_PRESETS:
+            raise CameraControlError(
+                f"mapping for {condition} has unknown profile: {profile}"
+            )
+        samples = evidence.get("sample_count")
+        if not isinstance(samples, int) or isinstance(samples, bool):
+            raise CameraControlError(
+                f"mapping sample_count for {condition} must be an integer"
+            )
+        if samples < minimum_samples:
+            raise CameraControlError(
+                f"mapping for {condition} has {samples} samples; "
+                f"requires {minimum_samples}"
+            )
+        if evidence.get("operator_approved") is not True:
+            raise CameraControlError(
+                f"mapping for {condition} requires operator_approved=true"
+            )
+        accepted = _rate(evidence, "ocr_acceptance_rate", condition)
+        baseline_accepted = _rate(evidence, "baseline_ocr_acceptance_rate", condition)
+        false_read = _rate(evidence, "held_out_false_read_rate", condition)
+        baseline_false_read = _rate(
+            evidence, "baseline_held_out_false_read_rate", condition
+        )
+        if accepted < baseline_accepted:
+            raise CameraControlError(
+                f"mapping for {condition} reduces OCR acceptance coverage"
+            )
+        if false_read > baseline_false_read:
+            raise CameraControlError(
+                f"mapping for {condition} increases held-out false reads"
+            )
+        mapping[condition] = str(profile)
+    return mapping
+
+
+def _rate(evidence: Mapping[str, object], name: str, condition: str) -> float:
+    value = evidence.get(name)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise CameraControlError(f"mapping {name} for {condition} must be numeric")
+    rate = float(value)
+    if not 0 <= rate <= 1:
+        raise CameraControlError(f"mapping {name} for {condition} must be 0..1")
+    return rate

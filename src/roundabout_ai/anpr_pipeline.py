@@ -58,6 +58,10 @@ class VehicleAnalysis:
     detections: int
     accepted_candidates: int
     rejection_reasons: dict[str, int]
+    best_detector_confidence: float | None
+    best_plate_width: int | None
+    best_plate_height: int | None
+    best_plate_sharpness: float | None
 
 
 def discover_vehicle_groups(
@@ -185,9 +189,13 @@ def _analyze_images(
         raise ValueError("maximum OCR candidates must be positive")
     candidates: list[PlateCandidate] = []
     detection_count = 0
+    detector_confidences: list[float] = []
     for image_id, frame in images:
         batch = detector.predict(frame)
         detection_count += len(batch.detections)
+        detector_confidences.extend(
+            detection.confidence for detection in batch.detections
+        )
         image_candidates: list[PlateCandidate] = []
         for detection in batch.detections:
             candidate = extract_plate_candidate(
@@ -217,12 +225,17 @@ def _analyze_images(
         for candidate in chosen
     )
     result = consensus_builder(vehicle_id, observations, consensus_policy)
+    best = chosen[0] if chosen else None
     return VehicleAnalysis(
         result=result,
         image_count=len(images),
         detections=detection_count,
         accepted_candidates=len(candidates),
         rejection_reasons=dict(rejection_reasons),
+        best_detector_confidence=max(detector_confidences, default=None),
+        best_plate_width=None if best is None else best.quality.width,
+        best_plate_height=None if best is None else best.quality.height,
+        best_plate_sharpness=None if best is None else best.quality.sharpness,
     )
 
 

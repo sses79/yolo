@@ -37,6 +37,8 @@ class DashboardSnapshot:
     camera_recommended_profile: str | None = None
     camera_control_status: str = "disabled"
     camera_quality: Mapping[str, float] | None = None
+    camera_current_settings: Mapping[str, str] | None = None
+    camera_last_changed_at: str | None = None
 
     @property
     def total_crossings(self) -> int:
@@ -73,6 +75,8 @@ class DashboardState:
         self._camera_recommended_profile: str | None = None
         self._camera_control_status = "disabled"
         self._camera_quality: dict[str, float] | None = None
+        self._camera_current_settings: dict[str, str] | None = None
+        self._camera_last_changed_at: str | None = None
 
     def begin(self) -> None:
         with self._lock:
@@ -97,6 +101,8 @@ class DashboardState:
             self._camera_current_profile = None
             self._camera_recommended_profile = None
             self._camera_quality = None
+            self._camera_current_settings = None
+            self._camera_last_changed_at = None
 
     def configure_camera_adaptation(self, mode: str) -> None:
         with self._lock:
@@ -112,6 +118,8 @@ class DashboardState:
         recommended_profile: str | None = None,
         current_profile: str | None = None,
         status: str | None = None,
+        current_settings: Mapping[str, str] | None = None,
+        last_changed_at: str | None = None,
     ) -> None:
         with self._lock:
             if quality is not None:
@@ -122,6 +130,10 @@ class DashboardState:
                 self._camera_current_profile = current_profile
             if status is not None:
                 self._camera_control_status = status
+            if current_settings is not None:
+                self._camera_current_settings = dict(current_settings)
+            if last_changed_at is not None:
+                self._camera_last_changed_at = last_changed_at
 
     def set_status(self, status: str, message: str | None = None) -> None:
         with self._lock:
@@ -207,4 +219,8 @@ class DashboardState:
                 camera_quality=None
                 if self._camera_quality is None
                 else dict(self._camera_quality),
+                camera_current_settings=None
+                if self._camera_current_settings is None
+                else dict(self._camera_current_settings),
+                camera_last_changed_at=self._camera_last_changed_at,
             )
