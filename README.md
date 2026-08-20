@@ -168,9 +168,12 @@ enough readable plate pixels to justify an ANPR prototype.
 
 The best starting sample is produced by running `roundabout-dashboard` with
 **Save event snapshot and vehicle crops** enabled. For each crossing, inspect the
-`crossing`, `centred`, and `sharpest` files under `data/events/images/` and use
-the most readable candidate as one vehicle observation. Do not count all three
-as independent samples because they belong to the same tracked vehicle.
+distinct `crossing`, `centred`, `largest`, and `sharpest` files under
+`data/events/images/` and use the most readable candidate as one vehicle
+observation. The wider horizontal context is intentional because a general
+vehicle detector can omit a front or rear bumper and its number plate. Do not
+count the alternatives as independent samples because they belong to the same
+tracked vehicle.
 
 Create a local CSV template:
 
@@ -261,7 +264,7 @@ after the first four characters, for example `AB12***`.
 
 For live use, open the dashboard, enable **Live ANPR/OCR on crossings**, and
 start processing. The worker keeps one plate detector and one RapidOCR engine
-alive, analyzes the buffered crossing/centred/sharpest crops only after a
+alive, analyzes the buffered crossing/centred/largest/sharpest crops only after a
 confirmed vehicle crossing, and compares the four privacy-visible characters
 across frames. It corrects common UK layout ambiguities such as `O`/`0` and
 `I`/`1`, requires two agreeing prefixes by default, and accepts a single frame

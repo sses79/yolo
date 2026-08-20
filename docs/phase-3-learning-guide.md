@@ -80,7 +80,7 @@ detection_confidence,plate_text,plate_confidence
 
 The store creates the parent directory and header on the first non-empty batch, appends rows thereafter, and rejects an existing file with a different header. Timestamps are converted to explicit UTC with millisecond precision; naive datetimes are rejected. A lock protects writes made through one store instance.
 
-`plate_text` and `plate_confidence` are reserved for a later, consent-gated ANPR phase and remain blank now. By default, an event stores metadata only. Raw video is never retained by the event store. When the user explicitly enables event images, each crossing saves one full annotated snapshot, while a bounded in-memory selector also saves distinct padded crossing, centred, and sharpest vehicle crops that satisfy a minimum vehicle-box size.
+`plate_text` and `plate_confidence` are reserved for a later, consent-gated ANPR phase and remain blank now. By default, an event stores metadata only. Raw video is never retained by the event store. When the user explicitly enables event images, each crossing saves one full annotated snapshot, while a bounded in-memory selector also saves distinct padded crossing, centred, largest, and sharpest vehicle crops that satisfy a minimum vehicle-box size.
 
 Both `roundabout-detect` and the dashboard use the same event sink. This keeps persistence independent of presentation. The guarantee is intentionally local and single-process: the CSV writer is not a multi-process database lock, and a row proves that software emitted an event, not that a human-labelled review agrees with it.
 

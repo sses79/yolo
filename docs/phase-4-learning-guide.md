@@ -50,7 +50,7 @@ These are alternative views of one tracked vehicle, not independent samples. Cou
 The human workflow is therefore:
 
 1. group files by track ID;
-2. inspect that track’s `crossing`, `centred`, and `sharpest` candidates;
+2. inspect that track’s `crossing`, `centred`, `largest`, and `sharpest` candidates;
 3. choose the most readable candidate;
 4. add one annotation row for that vehicle.
 
@@ -64,10 +64,11 @@ The implementation removes duplicate candidate frames by `frame_number`. If one 
 
 `VehicleCandidateBuffer` observes raw tracked vehicle detections on every processed frame. It ignores people, unsupported classes, and detections without a track ID. Each accepted crop is copied before boxes, ROI lines, or metric overlays are drawn.
 
-For every live track, the buffer keeps at most three candidates:
+For every live track, the buffer keeps at most four candidates:
 
 - `crossing` is continually replaced by the newest observation;
 - `centred` prefers suitable, unclipped crops with more edge clearance, then larger area and sharpness;
+- `largest` preserves the suitable frame with the largest vehicle crop;
 - `sharpest` prefers suitable, unclipped crops with higher Laplacian variance, then area.
 
 The name `centred` is shorthand for a completeness heuristic. Its rank uses distance from the left or right image edge, not Euclidean distance from the image centre.
@@ -182,7 +183,7 @@ Static checks remain:
 
 Evidence is concentrated in [`test_event_images.py`](../tests/test_event_images.py) and [`test_anpr_feasibility.py`](../tests/test_anpr_feasibility.py). These tests prove that:
 
-- the buffer selects distinct crossing, centred, and sharpest frames;
+- the buffer selects distinct crossing, centred, largest, and sharpest frames;
 - people and untracked detections are ignored;
 - stale tracks expire and total track state is bounded;
 - crops are padded, edge clipping is recorded, and undersized vehicle boxes are rejected;
@@ -216,7 +217,7 @@ Run the dashboard:
 .venv/bin/roundabout-dashboard
 ```
 
-Enable **Save event snapshot and vehicle crops** before pressing Start. After a confirmed crossing, group the resulting files by track ID and compare the `crossing`, `centred`, and `sharpest` images.
+Enable **Save event snapshot and vehicle crops** before pressing Start. After a confirmed crossing, group the resulting files by track ID and compare the `crossing`, `centred`, `largest`, and `sharpest` images.
 
 Predict first: `sharpest` will often be useful, but a `centred` or `crossing` candidate can show a clearer plate because the score is not plate-specific.
 

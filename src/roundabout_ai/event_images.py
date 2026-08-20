@@ -16,7 +16,7 @@ from roundabout_ai.detector import Detection
 from roundabout_ai.events import EventRecord
 
 VEHICLE_CLASSES = frozenset(("car", "motorcycle", "bus", "truck"))
-DEFAULT_HORIZONTAL_PADDING_RATIO = 0.15
+DEFAULT_HORIZONTAL_PADDING_RATIO = 0.35
 DEFAULT_VERTICAL_PADDING_RATIO = 0.10
 DEFAULT_MINIMUM_VEHICLE_WIDTH = 200
 DEFAULT_MINIMUM_VEHICLE_HEIGHT = 100
@@ -42,6 +42,7 @@ class _CandidateState:
     last_seen_frame: int
     crossing: VehicleCandidate
     centred: VehicleCandidate
+    largest: VehicleCandidate
     sharpest: VehicleCandidate
 
 
@@ -117,7 +118,7 @@ def _sharpest_rank(candidate: VehicleCandidate) -> tuple[bool, bool, float, int]
 
 
 class VehicleCandidateBuffer:
-    """Keep at most three raw crops for each of a bounded set of live tracks."""
+    """Keep at most four complementary crops for each bounded live track."""
 
     def __init__(
         self,
@@ -170,6 +171,7 @@ class VehicleCandidateBuffer:
                     last_seen_frame=self._frame_number,
                     crossing=current,
                     centred=current,
+                    largest=current,
                     sharpest=current,
                 )
                 continue
@@ -177,6 +179,11 @@ class VehicleCandidateBuffer:
             state.crossing = current
             if _centred_rank(current) > _centred_rank(state.centred):
                 state.centred = current
+            if (current.suitable, current.area) > (
+                state.largest.suitable,
+                state.largest.area,
+            ):
+                state.largest = current
             if _sharpest_rank(current) > _sharpest_rank(state.sharpest):
                 state.sharpest = current
 
@@ -195,7 +202,7 @@ class VehicleCandidateBuffer:
             del self._tracks[oldest]
 
     def select(self, track_id: int) -> tuple[tuple[str, VehicleCandidate], ...]:
-        """Return distinct, suitably sized crossing/centred/sharpest crops."""
+        """Return distinct crossing/centred/largest/sharpest vehicle crops."""
 
         state = self._tracks.get(track_id)
         if state is None:
@@ -205,6 +212,7 @@ class VehicleCandidateBuffer:
         for name, candidate in (
             ("crossing", state.crossing),
             ("centred", state.centred),
+            ("largest", state.largest),
             ("sharpest", state.sharpest),
         ):
             if candidate.suitable and candidate.frame_number not in used_frames:

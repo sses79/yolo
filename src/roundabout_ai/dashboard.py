@@ -109,11 +109,11 @@ def render_dashboard() -> None:
             "Save event snapshot and vehicle crops",
             value=False,
             disabled=initial.running,
-            help=(
-                "Off by default. On a crossing, retain the full annotated event "
-                "snapshot plus distinct raw crossing, centred, and sharpest "
-                "vehicle crops locally."
-            ),
+                help=(
+                    "Off by default. On a crossing, retain the full annotated event "
+                    "snapshot plus distinct raw crossing, centred, largest, and "
+                    "sharpest vehicle crops locally."
+                ),
         )
         live_anpr = st.checkbox(
             "Live ANPR/OCR on crossings",
@@ -204,9 +204,14 @@ def render_dashboard() -> None:
                 "Horizontal crop padding",
                 min_value=0.0,
                 max_value=0.5,
-                value=0.15,
+                value=0.35,
                 step=0.05,
                 disabled=initial.running,
+                help=(
+                    "Extra context on both sides of the vehicle box. The larger "
+                    "default preserves plates on front bumpers that extend beyond "
+                    "the general vehicle detector box."
+                ),
             )
             event_crop_vertical_padding = st.number_input(
                 "Vertical crop padding",
