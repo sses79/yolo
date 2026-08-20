@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import csv
 import threading
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from roundabout_ai.anpr import mask_plate_text
 from roundabout_ai.geometry import CrossingEvent
 
-BASE_EVENT_FIELDS = (
+LEGACY_BASE_EVENT_FIELDS = (
     "timestamp",
     "event_type",
     "line_name",
@@ -22,16 +23,29 @@ BASE_EVENT_FIELDS = (
     "plate_text",
     "plate_confidence",
 )
-SPEED_EVENT_FIELDS = (
-    *BASE_EVENT_FIELDS,
+LEGACY_SPEED_EVENT_FIELDS = (
+    *LEGACY_BASE_EVENT_FIELDS,
     "speed_class",
     "normalized_speed",
 )
-EVENT_FIELDS = (
-    *SPEED_EVENT_FIELDS,
+LEGACY_EVENT_FIELDS = (
+    *LEGACY_SPEED_EVENT_FIELDS,
     "camera_profile",
     "camera_settings",
 )
+BASE_EVENT_FIELDS = (
+    "timestamp",
+    "event_type",
+    "line_name",
+    "object_class",
+    "direction",
+    "track_id",
+    "detection_confidence",
+    "ocr_plate",
+    "ocr_confidence",
+)
+SPEED_EVENT_FIELDS = (*BASE_EVENT_FIELDS, "speed_class", "normalized_speed")
+EVENT_FIELDS = (*SPEED_EVENT_FIELDS, "camera_profile", "camera_settings")
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,8 +57,8 @@ class EventRecord:
     direction: str
     track_id: int
     detection_confidence: float
-    plate_text: str = ""
-    plate_confidence: float | None = None
+    ocr_plate: str = ""
+    ocr_confidence: float | None = None
     speed_class: str = "unknown"
     normalized_speed: float | None = None
     camera_profile: str = ""
@@ -60,8 +74,8 @@ class EventRecord:
             self.direction,
             str(self.track_id),
             f"{self.detection_confidence:.6f}",
-            self.plate_text,
-            "" if self.plate_confidence is None else f"{self.plate_confidence:.6f}",
+            self.ocr_plate,
+            "" if self.ocr_confidence is None else f"{self.ocr_confidence:.6f}",
             self.speed_class,
             "" if self.normalized_speed is None else f"{self.normalized_speed:.6f}",
             self.camera_profile,
@@ -80,8 +94,8 @@ class EventRecord:
             "detection_confidence": self.detection_confidence,
             "speed_class": self.speed_class,
             "normalized_speed": self.normalized_speed,
-            "plate_text": self.plate_text,
-            "plate_confidence": self.plate_confidence,
+            "ocr_plate": self.ocr_plate,
+            "ocr_confidence": self.ocr_confidence,
             "camera_profile": self.camera_profile,
             "camera_settings": self.camera_settings,
         }
@@ -121,6 +135,7 @@ class CsvEventStore:
         timestamp: datetime | None = None,
         camera_profile: str = "",
         camera_settings: str = "",
+        ocr_results: Mapping[int, tuple[str, float | None]] | None = None,
     ) -> tuple[EventRecord, ...]:
         """Write one frame's events and return their timestamped records."""
 
@@ -128,6 +143,7 @@ class CsvEventStore:
         if not pending:
             return ()
         observed_at = format_timestamp(timestamp or self._clock())
+        ocr_results = ocr_results or {}
         records = tuple(
             EventRecord(
                 observed_at,
@@ -137,6 +153,8 @@ class CsvEventStore:
                 event.direction,
                 event.track_id,
                 event.confidence,
+                ocr_plate=mask_plate_text(ocr_results.get(event.track_id, ("", None))[0]),
+                ocr_confidence=ocr_results.get(event.track_id, ("", None))[1],
                 speed_class=event.speed_class,
                 normalized_speed=event.normalized_speed,
                 camera_profile=camera_profile,
@@ -157,6 +175,9 @@ class CsvEventStore:
                         EVENT_FIELDS,
                         SPEED_EVENT_FIELDS,
                         BASE_EVENT_FIELDS,
+                        LEGACY_EVENT_FIELDS,
+                        LEGACY_SPEED_EVENT_FIELDS,
+                        LEGACY_BASE_EVENT_FIELDS,
                     }
                     if header not in supported_headers:
                         raise ValueError(
@@ -166,18 +187,33 @@ class CsvEventStore:
                     writer = csv.writer(handle)
                     if existing_header is None:
                         writer.writerow(EVENT_FIELDS)
-                    if header in {BASE_EVENT_FIELDS, SPEED_EVENT_FIELDS}:
+                    if header is not None and header != EVENT_FIELDS:
                         handle.seek(0)
                         legacy_rows = list(csv.reader(handle))[1:]
                         handle.seek(0)
                         handle.truncate()
                         writer.writerow(EVENT_FIELDS)
-                        if header == BASE_EVENT_FIELDS:
-                            writer.writerows(
-                                (*row, "unknown", "", "", "") for row in legacy_rows
+                        for row in legacy_rows:
+                            values = dict(zip(header, row, strict=True))
+                            writer.writerow(
+                                (
+                                    values.get("timestamp", ""),
+                                    values.get("event_type", ""),
+                                    values.get("line_name", ""),
+                                    values.get("object_class", ""),
+                                    values.get("direction", ""),
+                                    values.get("track_id", ""),
+                                    values.get("detection_confidence", ""),
+                                    values.get("ocr_plate")
+                                    or mask_plate_text(values.get("plate_text", "")),
+                                    values.get("ocr_confidence")
+                                    or values.get("plate_confidence", ""),
+                                    values.get("speed_class", "unknown"),
+                                    values.get("normalized_speed", ""),
+                                    values.get("camera_profile", ""),
+                                    values.get("camera_settings", ""),
+                                )
                             )
-                        else:
-                            writer.writerows((*row, "", "") for row in legacy_rows)
                     handle.seek(0, 2)
                     writer.writerows(record.csv_row() for record in records)
         except OSError as exc:

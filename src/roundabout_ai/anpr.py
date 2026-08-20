@@ -28,7 +28,7 @@ class PlateQualityPolicy:
     minimum_width: int = 64
     minimum_height: int = 16
     minimum_sharpness: float = 40.0
-    minimum_aspect_ratio: float = 2.0
+    minimum_aspect_ratio: float = 1.7
     maximum_aspect_ratio: float = 7.0
     maximum_skew_degrees: float = 15.0
     edge_margin: int = 2
@@ -151,6 +151,83 @@ def normalize_plate_text(value: str) -> str:
     return re.sub(r"[^A-Z0-9]", "", ascii_value.decode("ascii").upper())
 
 
+def mask_plate_text(value: str, *, visible_characters: int = 4) -> str:
+    """Expose only a bounded prefix of normalized plate text."""
+
+    if visible_characters < 0:
+        raise ValueError("visible characters must be nonnegative")
+    normalized = normalize_plate_text(value)
+    visible = normalized[:visible_characters]
+    return visible + "*" * max(0, len(normalized) - visible_characters)
+
+
+_DIGIT_AMBIGUITIES = {
+    "B": "8",
+    "D": "0",
+    "G": "6",
+    "I": "1",
+    "L": "1",
+    "O": "0",
+    "Q": "0",
+    "S": "5",
+    "Z": "2",
+}
+_LETTER_AMBIGUITIES = {value: key for key, value in _DIGIT_AMBIGUITIES.items()}
+_LETTER_AMBIGUITIES.update({"0": "O", "1": "I"})
+
+
+def canonicalize_uk_plate_text(value: str) -> str:
+    """Correct common OCR letter/digit ambiguities using plausible UK layouts."""
+
+    normalized = normalize_plate_text(value)
+    candidates: list[tuple[int, int, str]] = []
+    for priority, layout in enumerate(_uk_layouts(len(normalized))):
+        corrected = _fit_uk_layout(normalized, layout)
+        if corrected is not None:
+            text, changes = corrected
+            candidates.append((changes, priority, text))
+    return min(candidates)[2] if candidates else normalized
+
+
+def _uk_layouts(length: int) -> tuple[str, ...]:
+    layouts: list[str] = []
+
+    def add(layout: str) -> None:
+        if len(layout) == length and layout not in layouts:
+            layouts.append(layout)
+
+    add("LLDDLLL")
+    for digits in range(1, 4):
+        add("L" + "D" * digits + "LLL")
+        add("LLL" + "D" * digits + "L")
+    for letters in range(1, 4):
+        for digits in range(1, 5):
+            add("L" * letters + "D" * digits)
+            add("D" * digits + "L" * letters)
+    return tuple(layouts)
+
+
+def _fit_uk_layout(value: str, layout: str) -> tuple[str, int] | None:
+    corrected: list[str] = []
+    changes = 0
+    for character, expected in zip(value, layout, strict=True):
+        if expected == "L" and character.isalpha():
+            corrected.append(character)
+        elif expected == "D" and character.isdigit():
+            corrected.append(character)
+        else:
+            replacement = (
+                _LETTER_AMBIGUITIES.get(character)
+                if expected == "L"
+                else _DIGIT_AMBIGUITIES.get(character)
+            )
+            if replacement is None:
+                return None
+            corrected.append(replacement)
+            changes += 1
+    return "".join(corrected), changes
+
+
 def matches_uk_plate_format(value: str) -> bool:
     """Apply common UK layouts as a weak plausibility check."""
 
@@ -264,8 +341,7 @@ def extract_plate_candidate(
     aspect_ratio = raw_width / raw_height
     skew = estimate_skew_degrees(crop)
     clipped = (
-        intended != (x1, y1, x2, y2)
-        or raw_x1 <= policy.edge_margin
+        raw_x1 <= policy.edge_margin
         or raw_y1 <= policy.edge_margin
         or raw_x2 >= frame_width - policy.edge_margin
         or raw_y2 >= frame_height - policy.edge_margin
@@ -345,6 +421,84 @@ def build_consensus(
         vehicle_id,
         status,
         selected_text,
+        confidence,
+        highest_count,
+        len(observations),
+        format_valid,
+        tuple(reasons),
+        tuple(observations),
+    )
+
+
+def build_live_consensus(
+    vehicle_id: str,
+    observations: Sequence[OcrObservation],
+    policy: ConsensusPolicy = ConsensusPolicy(),
+    *,
+    visible_characters: int = 4,
+    single_frame_confidence: float = 0.9,
+) -> TrackPlateResult:
+    """Build live consensus on the privacy-visible prefix with a strict fallback."""
+
+    if visible_characters <= 0:
+        raise ValueError("visible characters must be positive")
+    if not 0 <= single_frame_confidence <= 1:
+        raise ValueError("single-frame confidence must be between 0 and 1")
+    eligible = tuple(
+        item
+        for item in observations
+        if len(item.normalized_text) >= max(policy.minimum_length, visible_characters)
+        and item.confidence >= policy.minimum_confidence
+    )
+    if not eligible:
+        return TrackPlateResult(
+            vehicle_id,
+            PlateStatus.NO_READ,
+            "",
+            None,
+            0,
+            len(observations),
+            False,
+            ("no_observation_met_text_and_confidence_thresholds",),
+            tuple(observations),
+        )
+
+    prefixes = Counter(
+        item.normalized_text[:visible_characters] for item in eligible
+    )
+    highest_count = max(prefixes.values())
+    leaders = sorted(
+        prefix for prefix, count in prefixes.items() if count == highest_count
+    )
+    selected_prefix = leaders[0]
+    selected = tuple(
+        item
+        for item in eligible
+        if item.normalized_text.startswith(selected_prefix)
+    )
+    selected_observation = max(
+        selected,
+        key=lambda item: (item.format_valid, item.confidence),
+    )
+    confidence = statistics.fmean(item.confidence for item in selected)
+    format_valid = any(item.format_valid for item in selected)
+    single_frame_fallback = (
+        len(eligible) == 1
+        and confidence >= single_frame_confidence
+        and (format_valid or not policy.require_uk_format)
+    )
+    reasons: list[str] = []
+    if len(leaders) > 1:
+        reasons.append("conflicting_prefix_observations")
+    if highest_count < policy.minimum_agreement and not single_frame_fallback:
+        reasons.append("insufficient_masked_prefix_agreement")
+    if policy.require_uk_format and not format_valid:
+        reasons.append("uk_format_check_failed")
+    status = PlateStatus.ACCEPTED if not reasons else PlateStatus.UNCERTAIN
+    return TrackPlateResult(
+        vehicle_id,
+        status,
+        selected_observation.normalized_text,
         confidence,
         highest_count,
         len(observations),

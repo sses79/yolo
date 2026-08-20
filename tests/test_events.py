@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from roundabout_ai.events import EVENT_FIELDS, CsvEventStore, format_timestamp
+from roundabout_ai.events import (
+    EVENT_FIELDS,
+    LEGACY_EVENT_FIELDS,
+    CsvEventStore,
+    format_timestamp,
+)
 from roundabout_ai.geometry import CrossingEvent
 
 
@@ -47,8 +52,8 @@ def test_csv_event_store_appends_stable_metadata_rows(tmp_path: Path) -> None:
             "direction": "entering",
             "track_id": "7",
             "detection_confidence": "0.876543",
-            "plate_text": "",
-            "plate_confidence": "",
+            "ocr_plate": "",
+            "ocr_confidence": "",
             "speed_class": "unknown",
             "normalized_speed": "",
             "camera_profile": "",
@@ -62,8 +67,8 @@ def test_csv_event_store_appends_stable_metadata_rows(tmp_path: Path) -> None:
             "direction": "entering",
             "track_id": "8",
             "detection_confidence": "0.876543",
-            "plate_text": "",
-            "plate_confidence": "",
+            "ocr_plate": "",
+            "ocr_confidence": "",
             "speed_class": "unknown",
             "normalized_speed": "",
             "camera_profile": "",
@@ -119,6 +124,30 @@ def test_csv_event_store_records_profile_and_upgrades_speed_schema(
     assert rows[0]["camera_profile"] == "day"
     assert rows[0]["camera_settings"] == '{"focusmode": "continuous-video"}'
     assert records[0].camera_profile == "day"
+
+
+def test_csv_event_store_masks_ocr_and_migrates_legacy_plate_columns(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "events.csv"
+    path.write_text(
+        ",".join(LEGACY_EVENT_FIELDS)
+        + "\n"
+        + "2026-08-15T18:30:01.234Z,line_crossing,north,car,entering,6,"
+        "0.9,XY99XYZ,0.8,fast,1.2,,\n",
+        encoding="utf-8",
+    )
+
+    records = CsvEventStore(path).write_all(
+        (crossing_event(),), ocr_results={7: ("AB12CDE", 0.9123456)}
+    )
+
+    rows = read_rows(path)
+    assert rows[0]["ocr_plate"] == "XY99***"
+    assert rows[0]["ocr_confidence"] == "0.8"
+    assert rows[1]["ocr_plate"] == "AB12***"
+    assert rows[1]["ocr_confidence"] == "0.912346"
+    assert records[0].ocr_plate == "AB12***"
 
 
 def test_timestamp_requires_timezone_and_schema_has_unique_fields() -> None:

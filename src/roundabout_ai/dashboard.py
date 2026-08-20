@@ -115,6 +115,16 @@ def render_dashboard() -> None:
                 "vehicle crops locally."
             ),
         )
+        live_anpr = st.checkbox(
+            "Live ANPR/OCR on crossings",
+            value=False,
+            disabled=initial.running,
+            help=(
+                "Runs the local plate model and OCR only after a confirmed vehicle "
+                "crossing. Event data stores the first four characters and masks "
+                "the remainder."
+            ),
+        )
 
         st.subheader("Live controls")
         confidence = st.slider(
@@ -204,6 +214,41 @@ def render_dashboard() -> None:
                 max_value=0.5,
                 value=0.10,
                 step=0.05,
+                disabled=initial.running,
+            )
+            st.markdown("**Live ANPR/OCR**")
+            anpr_plate_model = st.text_input(
+                "Plate detector model",
+                value="models/license-plate.pt",
+                disabled=initial.running,
+            )
+            anpr_detector_confidence = st.slider(
+                "Plate detector confidence",
+                min_value=0.05,
+                max_value=0.95,
+                value=0.35,
+                step=0.05,
+                disabled=initial.running,
+            )
+            anpr_image_size = st.select_slider(
+                "Plate detector image size",
+                options=(640, 960, 1280),
+                value=1280,
+                disabled=initial.running,
+            )
+            anpr_minimum_ocr_confidence = st.slider(
+                "Minimum OCR confidence",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.5,
+                step=0.05,
+                disabled=initial.running,
+            )
+            anpr_minimum_agreement = st.number_input(
+                "Required agreeing OCR frames",
+                min_value=1,
+                max_value=3,
+                value=2,
                 disabled=initial.running,
             )
             refresh_seconds = st.number_input(
@@ -308,6 +353,14 @@ def render_dashboard() -> None:
                         event_crop_vertical_padding=float(event_crop_vertical_padding),
                         event_crop_minimum_width=int(event_crop_minimum_width),
                         event_crop_minimum_height=int(event_crop_minimum_height),
+                        live_anpr=live_anpr,
+                        anpr_plate_model=Path(anpr_plate_model),
+                        anpr_detector_confidence=float(anpr_detector_confidence),
+                        anpr_image_size=int(anpr_image_size),
+                        anpr_minimum_ocr_confidence=float(
+                            anpr_minimum_ocr_confidence
+                        ),
+                        anpr_minimum_agreement=int(anpr_minimum_agreement),
                         camera_adaptation_mode=camera_adaptation_mode,
                         camera_control_url=camera_control_url.strip() or None,
                         camera_quality_interval_seconds=float(
@@ -436,6 +489,8 @@ def render_dashboard() -> None:
                     "direction",
                     "speed_class",
                     "normalized_speed",
+                    "ocr_plate",
+                    "ocr_confidence",
                     "camera_profile",
                     "line_name",
                     "track_id",
@@ -454,6 +509,10 @@ def render_dashboard() -> None:
                     "speed_class": "Speed class",
                     "normalized_speed": st.column_config.NumberColumn(
                         "Relative speed", format="%.2f"
+                    ),
+                    "ocr_plate": "OCR plate (masked)",
+                    "ocr_confidence": st.column_config.NumberColumn(
+                        "OCR confidence", format="%.3f"
                     ),
                 },
                 hide_index=True,

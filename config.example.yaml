@@ -75,15 +75,16 @@ anpr_feasibility:
   minimum_median_character_height_px: 16
   required_lighting: []
 
-# Phase 5 runs offline over saved vehicle crops and stays disabled until a
-# plate-specific YOLO model is supplied. The general yolo26n.pt COCO model is
-# not a plate detector. Registration text is neither shown nor stored by default.
+# Phase 5 can run over one image, saved vehicle crops, or opt-in live crossings.
+# The general yolo26n.pt COCO model is not a plate detector. Live event data
+# stores at most the first four normalized characters and masks the remainder.
 anpr_prototype:
   enabled: false
+  live_enabled: false
   plate_model: "models/license-plate.pt"
   plate_class: "license_plate"
   detector_confidence: 0.35
-  image_size: 640
+  image_size: 1280
   minimum_plate_size: [64, 16]
   minimum_sharpness: 40.0
   maximum_skew_degrees: 15.0
@@ -92,3 +93,4 @@ anpr_prototype:
   minimum_agreement: 2
   require_uk_format: true
   store_plate_text: false
+  event_plate_visible_characters: 4

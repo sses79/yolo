@@ -1,10 +1,12 @@
-"""Command-line entry point for the gated, offline Phase 5 ANPR prototype."""
+"""Command-line entry point for local image and gated batch ANPR/OCR."""
 
 from __future__ import annotations
 
 import argparse
 import csv
 import json
+import sys
+from collections.abc import Sequence
 from dataclasses import asdict
 from importlib.metadata import version
 from pathlib import Path
@@ -25,7 +27,9 @@ from roundabout_ai.anpr_feasibility import (
 )
 from roundabout_ai.anpr_pipeline import (
     VehicleAnalysis,
+    VehicleImageGroup,
     analyze_groups,
+    analyze_vehicle,
     discover_vehicle_groups,
 )
 from roundabout_ai.detector import YoloDetector
@@ -210,6 +214,52 @@ def _command_smoke_test(_: argparse.Namespace) -> int:
     return 0 if observation.normalized_text == "AB12CDE" else 1
 
 
+def _command_image(args: argparse.Namespace) -> int:
+    if not args.image_path.is_file():
+        raise ValueError(f"image does not exist: {args.image_path}")
+    detector = YoloDetector(
+        str(args.plate_model),
+        confidence=args.detector_confidence,
+        image_size=args.image_size,
+        device=args.device,
+        class_names=(args.plate_class,),
+    )
+    recognizer = RapidOcrRecognizer()
+    quality_policy = PlateQualityPolicy(
+        minimum_width=args.minimum_plate_width,
+        minimum_height=args.minimum_plate_height,
+        minimum_sharpness=args.minimum_sharpness,
+        maximum_skew_degrees=args.maximum_skew,
+    )
+    analysis = analyze_vehicle(
+        VehicleImageGroup(args.image_path.stem, (args.image_path,)),
+        detector,
+        recognizer,
+        quality_policy=quality_policy,
+        consensus_policy=ConsensusPolicy(
+            minimum_confidence=args.minimum_ocr_confidence,
+            minimum_agreement=1,
+            require_uk_format=not args.no_uk_format_check,
+        ),
+        maximum_ocr_candidates=1,
+    )
+    result = analysis.result
+    payload = {
+        "image_path": str(args.image_path),
+        "status": result.status.value,
+        "ocr_plate": result.plate_text,
+        "ocr_confidence": result.confidence,
+        "format_valid": result.format_valid,
+        "plate_detections": analysis.detections,
+        "accepted_candidates": analysis.accepted_candidates,
+        "rejection_reasons": analysis.rejection_reasons,
+        "reasons": list(result.reasons),
+        "privacy": "full normalized plate text shown by explicit local image command",
+    }
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
 def _add_analysis_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--images", type=Path, default=Path("data/events/images"))
     parser.add_argument("--plate-model", type=Path, required=True)
@@ -236,11 +286,29 @@ def _add_analysis_arguments(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Gated offline ANPR over saved vehicle crops."
+        description="Local image OCR and gated batch ANPR over vehicle crops.",
+        epilog="Single-image shortcut: roundabout-anpr --image-path PATH",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     smoke = subparsers.add_parser("smoke-test", help="test the local OCR runtime")
     smoke.set_defaults(handler=_command_smoke_test)
+
+    image = subparsers.add_parser("image", help="OCR one vehicle image")
+    image.add_argument("--image-path", type=Path, required=True)
+    image.add_argument(
+        "--plate-model", type=Path, default=Path("models/license-plate.pt")
+    )
+    image.add_argument("--plate-class", default="license_plate")
+    image.add_argument("--device", choices=("auto", "cpu", "mps"), default="cpu")
+    image.add_argument("--detector-confidence", type=float, default=0.35)
+    image.add_argument("--image-size", type=positive_int, default=1280)
+    image.add_argument("--minimum-plate-width", type=positive_int, default=64)
+    image.add_argument("--minimum-plate-height", type=positive_int, default=16)
+    image.add_argument("--minimum-sharpness", type=float, default=40.0)
+    image.add_argument("--maximum-skew", type=float, default=15.0)
+    image.add_argument("--minimum-ocr-confidence", type=float, default=0.5)
+    image.add_argument("--no-uk-format-check", action="store_true")
+    image.set_defaults(handler=_command_image)
 
     run = subparsers.add_parser("run", help="analyze local event images")
     _add_analysis_arguments(run)
@@ -260,9 +328,15 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args()
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    commands = {"smoke-test", "image", "run", "evaluate"}
+    if "--image-path" in arguments and not any(
+        argument in commands for argument in arguments
+    ):
+        arguments.insert(0, "image")
+    args = parser.parse_args(arguments)
     try:
         return int(args.handler(args))
     except (FileNotFoundError, ValueError) as exc:

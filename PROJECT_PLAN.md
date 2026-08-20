@@ -279,7 +279,7 @@ Suggested event fields:
 
 ```text
 timestamp, event_type, object_class, direction, track_id,
-detection_confidence, plate_text, plate_confidence, speed_class, normalized_speed
+detection_confidence, ocr_plate, ocr_confidence, speed_class, normalized_speed
 ```
 
 **Exit criteria:** restartable one-hour local Streamlit demo with stable counts, bounded memory use, no duplicate workers after UI interaction, and no raw-video retention by default.
@@ -313,14 +313,19 @@ This gate prevents spending time tuning OCR against unusable source images.
 
 ### Phase 5 — Optional local ANPR prototype
 
-**Implementation status:** implemented as the offline `roundabout-anpr`
-prototype. It requires the Phase 4 gate and a user-supplied plate-specific YOLO
-model; the general COCO vehicle model is deliberately rejected by class-name
-validation. The command groups saved Phase 3 candidates by tracked crossing,
-quality-gates plate detections, reuses one RapidOCR PP-OCRv6 small instance,
-and reports conservative multi-frame consensus. Registration text is redacted
-by default. The optional PaddleOCR-VL fallback remains an extension point and
-is not enabled in this local baseline.
+**Implementation status:** implemented by `roundabout-anpr` and the dashboard
+worker. The command supports a privacy-masked single-image result and gated
+offline batches. Opt-in live mode analyzes buffered crossing candidates only
+after a confirmed crossing and writes accepted multi-frame consensus as
+`ocr_plate` and `ocr_confidence`. Event storage exposes four normalized plate
+characters and masks the remainder, including when migrating legacy full-text
+columns. Live consensus corrects position-aware UK letter/digit ambiguities,
+compares the stored four-character prefix across frames, and permits a
+format-valid single-frame result only at 0.90 confidence or above. A
+user-supplied plate-specific YOLO model is required; the general COCO
+vehicle model is deliberately rejected by class-name validation. The optional
+PaddleOCR-VL fallback remains an extension point and is not enabled in this
+local baseline.
 
 - Detect a plate only inside a tracked vehicle crop.
 - Reject plates that are too small, blurred, highly skewed, or partly outside the frame.

@@ -7,8 +7,8 @@ from typing import Protocol, cast
 
 from roundabout_ai.anpr import (
     OcrObservation,
+    canonicalize_uk_plate_text,
     matches_uk_plate_format,
-    normalize_plate_text,
 )
 from roundabout_ai.capture import Frame
 
@@ -69,7 +69,7 @@ class RapidOcrRecognizer:
         scores = tuple(float(score) for score in (result.scores or ()))
         pairs = tuple(zip(texts, scores, strict=False))
         raw_text, confidence = max(pairs, key=lambda item: item[1], default=("", 0.0))
-        normalized = normalize_plate_text(raw_text)
+        normalized = canonicalize_uk_plate_text(raw_text)
         return OcrObservation(
             image_id=image_id,
             raw_text=raw_text,

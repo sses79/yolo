@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -38,6 +38,11 @@ class PlateDetectorLike(Protocol):
 
 class PlateRecognizerLike(Protocol):
     def recognize(self, image: Frame, *, image_id: str) -> OcrObservation: ...
+
+
+ConsensusBuilder = Callable[
+    [str, Sequence[OcrObservation], ConsensusPolicy], TrackPlateResult
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,26 +121,78 @@ def analyze_vehicle(
 ) -> VehicleAnalysis:
     """Detect plates in vehicle crops and form one conservative track result."""
 
-    if maximum_ocr_candidates <= 0:
-        raise ValueError("maximum OCR candidates must be positive")
-    candidates: list[PlateCandidate] = []
+    loaded_images: list[tuple[str, Frame]] = []
     rejection_reasons: Counter[str] = Counter()
-    detection_count = 0
-    image_count = 0
     for path in group.paths:
         loaded = cv2.imread(str(path))
         if loaded is None:
             rejection_reasons["unreadable_image"] += 1
             continue
-        frame = cast(Frame, loaded)
-        image_count += 1
+        loaded_images.append((path.name, cast(Frame, loaded)))
+    return _analyze_images(
+        group.vehicle_id,
+        loaded_images,
+        detector,
+        recognizer,
+        quality_policy=quality_policy,
+        consensus_policy=consensus_policy,
+        maximum_ocr_candidates=maximum_ocr_candidates,
+        rejection_reasons=rejection_reasons,
+    )
+
+
+def analyze_images(
+    vehicle_id: str,
+    images: Sequence[tuple[str, Frame]],
+    detector: PlateDetectorLike,
+    recognizer: PlateRecognizerLike,
+    *,
+    quality_policy: PlateQualityPolicy = PlateQualityPolicy(),
+    consensus_policy: ConsensusPolicy = ConsensusPolicy(),
+    maximum_ocr_candidates: int = 3,
+    consensus_builder: ConsensusBuilder = build_consensus,
+) -> VehicleAnalysis:
+    """Analyze named in-memory vehicle crops, including live crossing buffers."""
+
+    return _analyze_images(
+        vehicle_id,
+        images,
+        detector,
+        recognizer,
+        quality_policy=quality_policy,
+        consensus_policy=consensus_policy,
+        maximum_ocr_candidates=maximum_ocr_candidates,
+        rejection_reasons=Counter(),
+        consensus_builder=consensus_builder,
+    )
+
+
+def _analyze_images(
+    vehicle_id: str,
+    images: Sequence[tuple[str, Frame]],
+    detector: PlateDetectorLike,
+    recognizer: PlateRecognizerLike,
+    *,
+    quality_policy: PlateQualityPolicy,
+    consensus_policy: ConsensusPolicy,
+    maximum_ocr_candidates: int,
+    rejection_reasons: Counter[str],
+    consensus_builder: ConsensusBuilder = build_consensus,
+) -> VehicleAnalysis:
+    """Shared plate detection and OCR for disk-backed and in-memory images."""
+
+    if maximum_ocr_candidates <= 0:
+        raise ValueError("maximum OCR candidates must be positive")
+    candidates: list[PlateCandidate] = []
+    detection_count = 0
+    for image_id, frame in images:
         batch = detector.predict(frame)
         detection_count += len(batch.detections)
         image_candidates: list[PlateCandidate] = []
         for detection in batch.detections:
             candidate = extract_plate_candidate(
-                group.vehicle_id,
-                path.name,
+                vehicle_id,
+                image_id,
                 frame,
                 detection.xyxy,
                 detection.confidence,
@@ -159,10 +216,10 @@ def analyze_vehicle(
         )
         for candidate in chosen
     )
-    result = build_consensus(group.vehicle_id, observations, consensus_policy)
+    result = consensus_builder(vehicle_id, observations, consensus_policy)
     return VehicleAnalysis(
         result=result,
-        image_count=image_count,
+        image_count=len(images),
         detections=detection_count,
         accepted_candidates=len(candidates),
         rejection_reasons=dict(rejection_reasons),

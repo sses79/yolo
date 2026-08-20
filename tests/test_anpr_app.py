@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import roundabout_ai.anpr_app
 from roundabout_ai.anpr_app import LABEL_FIELDS, load_evaluation_labels
 
 
@@ -25,3 +26,20 @@ def test_rejects_duplicate_evaluation_vehicle_ids(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="duplicate vehicle_id"):
         load_evaluation_labels(path)
+
+
+def test_image_path_shorthand_routes_to_single_image_command(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    image = tmp_path / "vehicle.jpg"
+    image.touch()
+    seen: list[Path] = []
+
+    def fake_command(args: object) -> int:
+        seen.append(args.image_path)  # type: ignore[attr-defined]
+        return 0
+
+    monkeypatch.setattr(roundabout_ai.anpr_app, "_command_image", fake_command)
+
+    assert roundabout_ai.anpr_app.main(("--image-path", str(image))) == 0
+    assert seen == [image]

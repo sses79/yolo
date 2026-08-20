@@ -14,6 +14,17 @@ from queue import Empty, SimpleQueue
 from threading import Event, Lock, Thread, current_thread
 from typing import Protocol
 
+from roundabout_ai.anpr import (
+    ConsensusPolicy,
+    PlateQualityPolicy,
+    PlateStatus,
+    build_live_consensus,
+)
+from roundabout_ai.anpr_pipeline import (
+    PlateDetectorLike,
+    PlateRecognizerLike,
+    analyze_images,
+)
 from roundabout_ai.camera_control import (
     ALLOWED_SETTINGS,
     CAMERA_PRESETS,
@@ -44,6 +55,7 @@ from roundabout_ai.event_images import (
 )
 from roundabout_ai.events import CsvEventStore
 from roundabout_ai.geometry import CrossingCounter
+from roundabout_ai.ocr import RapidOcrRecognizer
 from roundabout_ai.scene import (
     Scene,
     annotate_scene,
@@ -88,6 +100,14 @@ class ProcessingConfig:
     camera_switch_cooldown_seconds: float = 60.0
     camera_automatic_confirmed: bool = False
     camera_capabilities_file: Path = Path("data/camera/capabilities.json")
+    live_anpr: bool = False
+    anpr_plate_model: Path = Path("models/license-plate.pt")
+    anpr_plate_class: str = "license_plate"
+    anpr_detector_confidence: float = 0.35
+    anpr_image_size: int = 1280
+    anpr_minimum_ocr_confidence: float = 0.5
+    anpr_minimum_agreement: int = 2
+    anpr_maximum_ocr_candidates: int = 3
 
     def __post_init__(self) -> None:
         if not self.url.strip():
@@ -135,6 +155,20 @@ class ProcessingConfig:
             raise ValueError("camera minimum dwell must be nonnegative")
         if self.camera_switch_cooldown_seconds < 0:
             raise ValueError("camera switch cooldown must be nonnegative")
+        if not self.anpr_plate_class.strip():
+            raise ValueError("ANPR plate class must not be empty")
+        if not 0 <= self.anpr_detector_confidence <= 1:
+            raise ValueError("ANPR detector confidence must be between 0 and 1")
+        if self.anpr_image_size <= 0:
+            raise ValueError("ANPR image size must be positive")
+        if not 0 <= self.anpr_minimum_ocr_confidence <= 1:
+            raise ValueError("minimum OCR confidence must be between 0 and 1")
+        if self.anpr_minimum_agreement <= 0:
+            raise ValueError("minimum OCR agreement must be positive")
+        if self.anpr_maximum_ocr_candidates <= 0:
+            raise ValueError("maximum OCR candidates must be positive")
+        if self.live_anpr and not self.anpr_plate_model.is_file():
+            raise ValueError(f"ANPR plate model does not exist: {self.anpr_plate_model}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +202,8 @@ DetectorFactory = Callable[[ProcessingConfig], DetectorLike]
 CameraFactory = Callable[[ProcessingConfig, LatestFrameStore], CameraLike]
 EventStoreFactory = Callable[[Path], CsvEventStore]
 ControlClientFactory = Callable[[ProcessingConfig], IpWebcamControlClient]
+PlateDetectorFactory = Callable[[ProcessingConfig], PlateDetectorLike]
+PlateRecognizerFactory = Callable[[], PlateRecognizerLike]
 
 
 def _create_detector(config: ProcessingConfig) -> DetectorLike:
@@ -201,6 +237,16 @@ def _create_control_client(config: ProcessingConfig) -> IpWebcamControlClient:
     )
 
 
+def _create_plate_detector(config: ProcessingConfig) -> PlateDetectorLike:
+    return YoloDetector(
+        str(config.anpr_plate_model),
+        confidence=config.anpr_detector_confidence,
+        image_size=config.anpr_image_size,
+        device=config.device,
+        class_names=(config.anpr_plate_class,),
+    )
+
+
 class DetectionWorker:
     """Own exactly one model, camera reader, and inference loop while running."""
 
@@ -211,6 +257,8 @@ class DetectionWorker:
         camera_factory: CameraFactory = _create_camera,
         event_store_factory: EventStoreFactory = CsvEventStore,
         control_client_factory: ControlClientFactory = _create_control_client,
+        plate_detector_factory: PlateDetectorFactory = _create_plate_detector,
+        plate_recognizer_factory: PlateRecognizerFactory = RapidOcrRecognizer,
         state: DashboardState | None = None,
     ) -> None:
         self.state = state or DashboardState()
@@ -218,6 +266,8 @@ class DetectionWorker:
         self._camera_factory = camera_factory
         self._event_store_factory = event_store_factory
         self._control_client_factory = control_client_factory
+        self._plate_detector_factory = plate_detector_factory
+        self._plate_recognizer_factory = plate_recognizer_factory
         self._logger = logging.getLogger("roundabout_ai.dashboard.worker")
         self._stop = Event()
         self._lifecycle_lock = Lock()
@@ -305,6 +355,14 @@ class DetectionWorker:
             scene = load_scene(config.scene_config) if config.scene_config else None
             self.state.set_status("loading_model", f"Loading {config.model}")
             detector = self._detector_factory(config)
+            plate_detector: PlateDetectorLike | None = None
+            plate_recognizer: PlateRecognizerLike | None = None
+            if config.live_anpr:
+                self.state.set_status(
+                    "loading_model", f"Loading live ANPR {config.anpr_plate_model}"
+                )
+                plate_detector = self._plate_detector_factory(config)
+                plate_recognizer = self._plate_recognizer_factory()
             event_store = self._event_store_factory(config.event_file)
             control_client: IpWebcamControlClient | None = None
             capabilities: CameraCapabilities | None = None
@@ -342,6 +400,8 @@ class DetectionWorker:
                 scene,
                 control_client,
                 capabilities,
+                plate_detector,
+                plate_recognizer,
             )
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
@@ -363,6 +423,8 @@ class DetectionWorker:
         configured_scene: Scene | None,
         control_client: IpWebcamControlClient | None,
         capabilities: CameraCapabilities | None,
+        plate_detector: PlateDetectorLike | None,
+        plate_recognizer: PlateRecognizerLike | None,
     ) -> None:
         rate = ConsumptionRate()
         processed = 0
@@ -381,7 +443,7 @@ class DetectionWorker:
                 minimum_vehicle_width=config.event_crop_minimum_width,
                 minimum_vehicle_height=config.event_crop_minimum_height,
             )
-            if config.save_event_images
+            if config.save_event_images or config.live_anpr
             else None
         )
         advisor = CameraProfileAdvisor()
@@ -511,12 +573,62 @@ class DetectionWorker:
             crossing_events = counter.update(
                 track_observations(detections, speed_estimates)
             )
+            ocr_results: dict[int, tuple[str, float | None]] = {}
+            if (
+                crossing_events
+                and candidate_buffer is not None
+                and plate_detector is not None
+                and plate_recognizer is not None
+            ):
+                for event in crossing_events:
+                    candidates = candidate_buffer.select(event.track_id)
+                    analysis = analyze_images(
+                        f"live-track-{event.track_id}",
+                        tuple(
+                            (f"{kind}-track-{event.track_id}", candidate.crop)
+                            for kind, candidate in candidates
+                        ),
+                        plate_detector,
+                        plate_recognizer,
+                        quality_policy=PlateQualityPolicy(
+                            minimum_width=48,
+                            minimum_height=12,
+                            minimum_sharpness=20.0,
+                            minimum_aspect_ratio=1.4,
+                            maximum_skew_degrees=25.0,
+                            edge_margin=1,
+                        ),
+                        consensus_policy=ConsensusPolicy(
+                            minimum_confidence=config.anpr_minimum_ocr_confidence,
+                            minimum_agreement=config.anpr_minimum_agreement,
+                        ),
+                        maximum_ocr_candidates=config.anpr_maximum_ocr_candidates,
+                        consensus_builder=build_live_consensus,
+                    )
+                    result = analysis.result
+                    if result.status is PlateStatus.ACCEPTED:
+                        ocr_results[event.track_id] = (
+                            result.plate_text,
+                            result.confidence,
+                        )
+                    self._logger.info(
+                        "live_anpr track_id=%d status=%s confidence=%s "
+                        "observations=%d reasons=%s",
+                        event.track_id,
+                        result.status.value,
+                        "none"
+                        if result.confidence is None
+                        else f"{result.confidence:.3f}",
+                        result.observation_count,
+                        ",".join(result.reasons) or "none",
+                    )
             event_records = event_store.write_all(
                 crossing_events,
                 camera_profile=current_profile or "",
                 camera_settings=json.dumps(current_settings, sort_keys=True)
                 if current_settings
                 else "",
+                ocr_results=ocr_results,
             )
 
             annotated = packet.frame
@@ -534,7 +646,7 @@ class DetectionWorker:
                     ),
                 )
             dashboard_records = list(event_records)
-            if candidate_buffer is not None:
+            if config.save_event_images and candidate_buffer is not None:
                 for record_index, record in enumerate(event_records):
                     snapshot_path = save_event_snapshot(
                         annotated,

@@ -10,9 +10,12 @@ from roundabout_ai.anpr import (
     PlateStatus,
     TrackPlateResult,
     build_consensus,
+    build_live_consensus,
+    canonicalize_uk_plate_text,
     character_accuracy,
     evaluate_results,
     extract_plate_candidate,
+    mask_plate_text,
     matches_uk_plate_format,
     normalize_plate_text,
 )
@@ -33,6 +36,35 @@ def test_normalizes_and_weakly_validates_uk_plate_text() -> None:
     assert normalize_plate_text(" ab12 c-dé ") == "AB12CDE"
     assert matches_uk_plate_format("AB12 CDE")
     assert not matches_uk_plate_format("NOT-A-PLATE")
+
+
+def test_masks_every_plate_character_after_the_first_four() -> None:
+    assert mask_plate_text("ab12 cde") == "AB12***"
+    assert mask_plate_text("ABC") == "ABC"
+    with pytest.raises(ValueError, match="nonnegative"):
+        mask_plate_text("AB12CDE", visible_characters=-1)
+
+
+def test_canonicalizes_common_uk_letter_digit_ambiguities() -> None:
+    assert canonicalize_uk_plate_text("SRO7 TOO") == "SR07TOO"
+    assert canonicalize_uk_plate_text("AB12CDE") == "AB12CDE"
+
+
+def test_live_consensus_uses_masked_prefix_and_high_confidence_fallback() -> None:
+    prefix_agreement = build_live_consensus(
+        "vehicle-1", (observation("AB12CDE"), observation("AB12CDF"))
+    )
+    fallback = build_live_consensus(
+        "vehicle-2", (observation("XY99XYZ", confidence=0.95),)
+    )
+    below_fallback = build_live_consensus(
+        "vehicle-3", (observation("XY99XYZ", confidence=0.89),)
+    )
+
+    assert prefix_agreement.status is PlateStatus.ACCEPTED
+    assert prefix_agreement.agreement == 2
+    assert fallback.status is PlateStatus.ACCEPTED
+    assert below_fallback.status is PlateStatus.UNCERTAIN
 
 
 def test_candidate_quality_rejects_small_blurred_and_clipped_plate() -> None:

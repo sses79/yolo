@@ -235,18 +235,45 @@ Typical improvements before collecting a new sample are a lower camera angle,
 closer optical view, more light, or a faster shutter. OCR remains Phase 5 and
 should begin only after reviewing `data/anpr/report.md`.
 
-## Phase 5 offline local ANPR prototype
+## Phase 5 local and live ANPR/OCR
 
-Phase 5 analyzes the vehicle crops already saved under `data/events/images/`.
-It does not connect to the live stream or alter `events.csv`. Supply a local
-YOLO model trained to detect number plates; `yolo26n.pt` is a general COCO road
-user model and cannot be substituted for a plate detector.
+Phase 5 can analyze one image, process saved vehicle crops, or run on confirmed
+dashboard crossings. Supply a local YOLO model trained to detect number plates;
+`yolo26n.pt` is a general COCO road-user model and cannot be substituted for a
+plate detector.
 
 First verify the Python 3.14 OCR installation and PP-OCRv6 small recognizer:
 
 ```bash
 .venv/bin/roundabout-anpr smoke-test
 ```
+
+For the simplest one-image check, pass a vehicle crop directly. The JSON result
+contains `status`, `ocr_plate`, and `ocr_confidence`. This explicit local command
+returns the full normalized `ocr_plate`; do not publish or retain its output
+unless that is appropriate for your use. Dashboard event storage remains masked
+after the first four characters, for example `AB12***`.
+
+```bash
+.venv/bin/roundabout-anpr \
+  --image-path data/events/images/example-sharpest.jpg
+```
+
+For live use, open the dashboard, enable **Live ANPR/OCR on crossings**, and
+start processing. The worker keeps one plate detector and one RapidOCR engine
+alive, analyzes the buffered crossing/centred/sharpest crops only after a
+confirmed vehicle crossing, and compares the four privacy-visible characters
+across frames. It corrects common UK layout ambiguities such as `O`/`0` and
+`I`/`1`, requires two agreeing prefixes by default, and accepts a single frame
+only when it is UK-format-valid with confidence of at least 0.90.
+Accepted results are written to `events.csv` as `ocr_plate` and
+`ocr_confidence`. The storage boundary always masks characters after the first
+four. Existing `plate_text`/`plate_confidence` CSV columns are upgraded in place
+and any historical plate text is masked during migration.
+
+Live ANPR is an experimental collection aid, not proof of identification. It is
+opt-in, keeps uncertain/no-read results blank in event rows, and does not bypass
+the Phase 4 recommendation or the held-out Phase 5 accuracy evaluation.
 
 Run the gated prototype with the class name exposed by your plate model:
 
@@ -268,7 +295,7 @@ good observations agree. It uses one long-lived RapidOCR instance in
 recognition-only mode. Results remain `uncertain` or `no_read` when evidence is
 weak.
 
-Console and JSON results redact registration text by default. Explicit local
+Batch console and JSON results redact registration text by default. Explicit local
 debugging requires `--store-text`; do not publish that output. To write a
 redacted local report:
 

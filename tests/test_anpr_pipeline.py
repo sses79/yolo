@@ -8,6 +8,7 @@ import numpy as np
 from roundabout_ai.anpr import OcrObservation, PlateQualityPolicy, PlateStatus
 from roundabout_ai.anpr_pipeline import (
     VehicleImageGroup,
+    analyze_images,
     analyze_vehicle,
     discover_vehicle_groups,
 )
@@ -78,3 +79,29 @@ def test_pipeline_uses_multiple_good_vehicle_crops_for_consensus(
     assert analysis.result.status is PlateStatus.ACCEPTED
     assert analysis.result.agreement == 3
     assert len(recognizer.image_ids) == 3
+
+
+def test_pipeline_analyzes_live_in_memory_vehicle_crops() -> None:
+    frame = np.full((100, 240, 3), 255, dtype=np.uint8)
+    cv2.putText(
+        frame,
+        "AB12CDE",
+        (38, 61),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        (0, 0, 0),
+        2,
+    )
+    recognizer = FakeRecognizer()
+
+    analysis = analyze_images(
+        "live-track-7",
+        (("crossing", frame), ("sharpest", frame.copy())),
+        FakeDetector(),
+        recognizer,
+        quality_policy=PlateQualityPolicy(minimum_sharpness=10),
+    )
+
+    assert analysis.result.status is PlateStatus.ACCEPTED
+    assert analysis.result.plate_text == "AB12CDE"
+    assert recognizer.image_ids == ["crossing", "sharpest"]
