@@ -7,6 +7,20 @@ camera:
   read_timeout_seconds: 5.0
   stale_after_seconds: 2.0
 
+# Phase 6 defaults to observation-only recommendations. The control URL is an
+# explicit trust boundary and must not include /video. Automatic mode also
+# requires the dashboard confirmation checkbox after manually reviewing all
+# four presets on this specific phone and scene.
+camera_adaptation:
+  mode: "recommend" # off, recommend, or automatic
+  control_url: "http://192.168.1.142:8080"
+  control_timeout_seconds: 2.0
+  quality_interval_seconds: 5.0
+  minimum_profile_dwell_seconds: 300.0
+  failed_switch_cooldown_seconds: 60.0
+  capabilities_file: "data/camera/capabilities.json"
+  automatic_confirmed: false
+
 diagnostic:
   metrics_interval_seconds: 2.0
   snapshot_directory: "data/snapshots"
@@ -25,6 +39,10 @@ tracking:
   tracker_config: "bytetrack.yaml"
   minimum_track_age: 3
   maximum_missing_frames: 30
+  # Relative image motion; this is not mph or km/h.
+  fast_speed_threshold_box_heights_per_second: 1.0
+  minimum_speed_observations: 3
+  minimum_speed_duration_seconds: 0.5
 
 # Generate this section interactively with `roundabout-calibrate`. Coordinates
 # are pixels in the saved reference frame and scale to the live frame size.
@@ -56,3 +74,23 @@ anpr_feasibility:
   stop_readable_rate: 0.2
   minimum_median_character_height_px: 16
   required_lighting: []
+
+# Phase 5 can run over one image, saved vehicle crops, or opt-in live crossings.
+# The general yolo26n.pt COCO model is not a plate detector. Live event data
+# stores at most the first four normalized characters and masks the remainder.
+anpr_prototype:
+  enabled: false
+  live_enabled: false
+  plate_model: "models/license-plate.pt"
+  plate_class: "license_plate"
+  detector_confidence: 0.35
+  image_size: 1280
+  minimum_plate_size: [64, 16]
+  minimum_sharpness: 40.0
+  maximum_skew_degrees: 15.0
+  maximum_ocr_candidates: 3
+  minimum_ocr_confidence: 0.5
+  minimum_agreement: 2
+  require_uk_format: true
+  store_plate_text: false
+  event_plate_visible_characters: 4

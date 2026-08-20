@@ -4,14 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "roundabout-ai"
-version = "0.5.0"
+version = "0.8.0"
 description = "Local Android IP Webcam diagnostics and roundabout computer-vision demo"
 readme = "README.md"
 requires-python = ">=3.14,<3.15"
 dependencies = [
     "lap>=0.5.13,<0.6",
+    "onnxruntime>=1.27,<2",
     "opencv-python>=5.0,<6",
     "PyYAML>=6.0.3,<7",
+    "rapidocr>=3.9.2,<4",
     "streamlit>=1.60,<2",
     "ultralytics>=8.4.118,<9",
 ]
@@ -29,6 +31,7 @@ roundabout-calibrate = "roundabout_ai.calibration_app:main"
 roundabout-detect = "roundabout_ai.detection_app:main"
 roundabout-dashboard = "roundabout_ai.dashboard:main"
 roundabout-anpr-assess = "roundabout_ai.anpr_feasibility:main"
+roundabout-anpr = "roundabout_ai.anpr_app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

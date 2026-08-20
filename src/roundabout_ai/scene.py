@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -14,6 +14,7 @@ import yaml
 from roundabout_ai.capture import Frame
 from roundabout_ai.detector import Detection
 from roundabout_ai.geometry import CountLine, Point, TrackObservation, point_in_polygon
+from roundabout_ai.speed import SpeedEstimate
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,17 +130,27 @@ def filter_detections_by_roi(
     )
 
 
-def track_observations(detections: Iterable[Detection]) -> tuple[TrackObservation, ...]:
-    return tuple(
-        TrackObservation(
-            detection.track_id,
-            detection.label,
-            detection.confidence,
-            detection_centre(detection),
+def track_observations(
+    detections: Iterable[Detection],
+    speed_estimates: Mapping[int, SpeedEstimate] | None = None,
+) -> tuple[TrackObservation, ...]:
+    estimates = speed_estimates or {}
+    observations: list[TrackObservation] = []
+    for detection in detections:
+        if detection.track_id is None:
+            continue
+        estimate = estimates.get(detection.track_id, SpeedEstimate("unknown", None))
+        observations.append(
+            TrackObservation(
+                detection.track_id,
+                detection.label,
+                detection.confidence,
+                detection_centre(detection),
+                estimate.speed_class,
+                estimate.normalized_speed,
+            )
         )
-        for detection in detections
-        if detection.track_id is not None
-    )
+    return tuple(observations)
 
 
 def annotate_scene(frame: Frame, scene: Scene) -> Frame:

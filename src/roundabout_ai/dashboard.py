@@ -115,6 +115,16 @@ def render_dashboard() -> None:
                 "vehicle crops locally."
             ),
         )
+        live_anpr = st.checkbox(
+            "Live ANPR/OCR on crossings",
+            value=False,
+            disabled=initial.running,
+            help=(
+                "Runs the local plate model and OCR only after a confirmed vehicle "
+                "crossing. Event data stores the first four characters and masks "
+                "the remainder."
+            ),
+        )
 
         st.subheader("Live controls")
         confidence = st.slider(
@@ -149,6 +159,33 @@ def render_dashboard() -> None:
                 value=30,
                 disabled=initial.running,
             )
+            fast_speed_threshold = st.number_input(
+                "Fast threshold (box heights/second)",
+                min_value=0.05,
+                max_value=20.0,
+                value=1.0,
+                step=0.05,
+                disabled=initial.running,
+                help=(
+                    "Relative image speed, not mph or km/h. Recalibrate this value "
+                    "against your re-collected tracks."
+                ),
+            )
+            minimum_speed_observations = st.number_input(
+                "Minimum speed observations",
+                min_value=2,
+                max_value=30,
+                value=3,
+                disabled=initial.running,
+            )
+            minimum_speed_duration_seconds = st.number_input(
+                "Minimum speed duration (seconds)",
+                min_value=0.1,
+                max_value=5.0,
+                value=0.5,
+                step=0.1,
+                disabled=initial.running,
+            )
             event_crop_minimum_width = st.number_input(
                 "Minimum vehicle crop width",
                 min_value=1,
@@ -179,12 +216,99 @@ def render_dashboard() -> None:
                 step=0.05,
                 disabled=initial.running,
             )
+            st.markdown("**Live ANPR/OCR**")
+            anpr_plate_model = st.text_input(
+                "Plate detector model",
+                value="models/license-plate.pt",
+                disabled=initial.running,
+            )
+            anpr_detector_confidence = st.slider(
+                "Plate detector confidence",
+                min_value=0.05,
+                max_value=0.95,
+                value=0.35,
+                step=0.05,
+                disabled=initial.running,
+            )
+            anpr_image_size = st.select_slider(
+                "Plate detector image size",
+                options=(640, 960, 1280),
+                value=1280,
+                disabled=initial.running,
+            )
+            anpr_minimum_ocr_confidence = st.slider(
+                "Minimum OCR confidence",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.5,
+                step=0.05,
+                disabled=initial.running,
+            )
+            anpr_minimum_agreement = st.number_input(
+                "Required agreeing OCR frames",
+                min_value=1,
+                max_value=3,
+                value=2,
+                disabled=initial.running,
+            )
             refresh_seconds = st.number_input(
                 "Dashboard refresh seconds",
                 min_value=0.1,
                 max_value=5.0,
                 value=0.2,
                 step=0.1,
+            )
+            st.markdown("**Adaptive camera (Phase 6)**")
+            camera_adaptation_mode = st.selectbox(
+                "Camera adaptation",
+                ("off", "recommend", "automatic"),
+                format_func=lambda value: {
+                    "off": "Off",
+                    "recommend": "Recommend only",
+                    "automatic": "Automatic (experimental)",
+                }[value],
+                disabled=initial.running,
+                help=(
+                    "Recommendations never write settings. Automatic mode uses "
+                    "only allowlisted presets after repeated ROI measurements."
+                ),
+            )
+            camera_control_url = st.text_input(
+                "IP Webcam control URL",
+                value=os.environ.get("ROUNDABOUT_CAMERA_CONTROL_URL", ""),
+                placeholder="http://192.168.1.142:8080",
+                disabled=initial.running,
+                help="Explicit base URL; do not include /video.",
+            )
+            camera_quality_interval_seconds = st.number_input(
+                "Quality evaluation interval (seconds)",
+                min_value=1.0,
+                max_value=300.0,
+                value=5.0,
+                disabled=initial.running,
+            )
+            camera_minimum_dwell_seconds = st.number_input(
+                "Minimum profile dwell (seconds)",
+                min_value=0.0,
+                max_value=3600.0,
+                value=300.0,
+                disabled=initial.running,
+            )
+            camera_switch_cooldown_seconds = st.number_input(
+                "Failed-switch cooldown (seconds)",
+                min_value=0.0,
+                max_value=3600.0,
+                value=60.0,
+                disabled=initial.running,
+            )
+            camera_automatic_confirmed = st.checkbox(
+                "I reviewed the presets and accept automatic camera changes",
+                value=False,
+                disabled=initial.running,
+                help=(
+                    "Required for automatic mode. Test each preset manually under "
+                    "representative road conditions first."
+                ),
             )
 
         worker.set_controls(
@@ -216,6 +340,11 @@ def render_dashboard() -> None:
                         scene_config=Path(scene_path) if scene_path.strip() else None,
                         minimum_track_age=int(minimum_track_age),
                         maximum_missing_frames=int(maximum_missing_frames),
+                        fast_speed_threshold=float(fast_speed_threshold),
+                        minimum_speed_observations=int(minimum_speed_observations),
+                        minimum_speed_duration_seconds=float(
+                            minimum_speed_duration_seconds
+                        ),
                         event_file=Path(event_file),
                         save_event_images=save_event_images,
                         event_crop_horizontal_padding=float(
@@ -224,6 +353,26 @@ def render_dashboard() -> None:
                         event_crop_vertical_padding=float(event_crop_vertical_padding),
                         event_crop_minimum_width=int(event_crop_minimum_width),
                         event_crop_minimum_height=int(event_crop_minimum_height),
+                        live_anpr=live_anpr,
+                        anpr_plate_model=Path(anpr_plate_model),
+                        anpr_detector_confidence=float(anpr_detector_confidence),
+                        anpr_image_size=int(anpr_image_size),
+                        anpr_minimum_ocr_confidence=float(
+                            anpr_minimum_ocr_confidence
+                        ),
+                        anpr_minimum_agreement=int(anpr_minimum_agreement),
+                        camera_adaptation_mode=camera_adaptation_mode,
+                        camera_control_url=camera_control_url.strip() or None,
+                        camera_quality_interval_seconds=float(
+                            camera_quality_interval_seconds
+                        ),
+                        camera_minimum_dwell_seconds=float(
+                            camera_minimum_dwell_seconds
+                        ),
+                        camera_switch_cooldown_seconds=float(
+                            camera_switch_cooldown_seconds
+                        ),
+                        camera_automatic_confirmed=camera_automatic_confirmed,
                     )
                 )
                 if started:
@@ -245,6 +394,43 @@ def render_dashboard() -> None:
             st.info(status)
         if snapshot.person_visible:
             st.warning("Person detected in the configured road ROI.")
+
+        if snapshot.camera_adaptation_mode != "off":
+            st.subheader("Adaptive camera")
+            profile_columns = st.columns(4)
+            profile_columns[0].metric("Mode", snapshot.camera_adaptation_mode.title())
+            profile_columns[1].metric(
+                "Current profile", snapshot.camera_current_profile or "Baseline"
+            )
+            profile_columns[2].metric(
+                "Recommended", snapshot.camera_recommended_profile or "Collecting"
+            )
+            quality = snapshot.camera_quality or {}
+            profile_columns[3].metric(
+                "ROI brightness",
+                "n/a"
+                if "luminance_median" not in quality
+                else f"{quality['luminance_median']:.0f}/255",
+            )
+            st.caption(snapshot.camera_control_status)
+            if quality:
+                st.caption(
+                    f"ROI sharpness {quality['sharpness']:.1f} · "
+                    f"underexposed {quality['underexposed_ratio']:.1%} · "
+                    f"overexposed {quality['overexposed_ratio']:.1%} · "
+                    f"noise {quality['noise']:.1f}"
+                )
+            if snapshot.running:
+                selected_profile = st.selectbox(
+                    "Manual camera profile",
+                    ("day", "glare", "dusk", "night"),
+                    key="manual_camera_profile",
+                )
+                apply_column, rollback_column = st.columns(2)
+                if apply_column.button("Apply profile", width="stretch"):
+                    worker.request_camera_profile(selected_profile)
+                if rollback_column.button("Roll back", width="stretch"):
+                    worker.request_camera_rollback()
 
         status_columns = st.columns(6)
         status_columns[0].metric("Capture FPS", f"{snapshot.capture_fps:.1f}")
@@ -294,7 +480,44 @@ def render_dashboard() -> None:
         st.subheader("Recent events")
         rows = event_table_rows(snapshot)
         if rows:
-            st.dataframe(rows, hide_index=True, width="stretch")
+            st.dataframe(
+                rows,
+                column_order=(
+                    "timestamp",
+                    "preview_image",
+                    "object_class",
+                    "direction",
+                    "speed_class",
+                    "normalized_speed",
+                    "ocr_plate",
+                    "ocr_confidence",
+                    "camera_profile",
+                    "line_name",
+                    "track_id",
+                    "detection_confidence",
+                ),
+                column_config={
+                    "preview_image": st.column_config.ImageColumn(
+                        "Crossing image",
+                        width="small",
+                        help=(
+                            "Raw crossing crop when suitable; annotated event "
+                            "snapshot otherwise. Available when event images are enabled."
+                        ),
+                    ),
+                    "direction": "Crossing direction",
+                    "speed_class": "Speed class",
+                    "normalized_speed": st.column_config.NumberColumn(
+                        "Relative speed", format="%.2f"
+                    ),
+                    "ocr_plate": "OCR plate (masked)",
+                    "ocr_confidence": st.column_config.NumberColumn(
+                        "OCR confidence", format="%.3f"
+                    ),
+                },
+                hide_index=True,
+                width="stretch",
+            )
         else:
             st.caption(
                 "Events will appear after a tracked object crosses a count line."

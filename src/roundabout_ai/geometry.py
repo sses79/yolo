@@ -72,6 +72,8 @@ class TrackObservation:
     label: str
     confidence: float
     centre: Point
+    speed_class: str = "unknown"
+    normalized_speed: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +83,8 @@ class CrossingEvent:
     label: str
     direction: str
     confidence: float
+    speed_class: str = "unknown"
+    normalized_speed: float | None = None
 
 
 @dataclass(slots=True)
@@ -176,6 +180,8 @@ class CrossingCounter:
                         observation.label,
                         direction,
                         observation.confidence,
+                        observation.speed_class,
+                        observation.normalized_speed,
                     )
                     events.append(event)
                     state.counted_lines.add(line.name)

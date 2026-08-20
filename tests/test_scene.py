@@ -15,6 +15,7 @@ from roundabout_ai.scene import (
     save_scene,
     track_observations,
 )
+from roundabout_ai.speed import SpeedEstimate
 
 
 def test_scene_yaml_round_trip_and_scaling(tmp_path: Path) -> None:
@@ -62,6 +63,10 @@ def test_roi_filter_and_track_observation_use_box_centre() -> None:
     assert filtered == (inside,)
     assert observations[0].track_id == 11
     assert observations[0].centre == (15.0, 15.0)
+
+    observations = track_observations(filtered, {11: SpeedEstimate("slow", 0.4)})
+    assert observations[0].speed_class == "slow"
+    assert observations[0].normalized_speed == 0.4
 
 
 def test_scene_annotation_returns_a_drawn_copy() -> None:

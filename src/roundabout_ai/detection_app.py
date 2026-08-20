@@ -32,6 +32,7 @@ from roundabout_ai.scene import (
     load_scene,
     track_observations,
 )
+from roundabout_ai.speed import TrackSpeedEstimator
 
 WINDOW_NAME = "Roundabout AI detection — s snapshot, q quit"
 
@@ -103,6 +104,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tracker-config", default="bytetrack.yaml")
     parser.add_argument("--minimum-track-age", type=positive_int, default=3)
     parser.add_argument("--maximum-missing-frames", type=nonnegative_int, default=30)
+    parser.add_argument(
+        "--fast-speed-threshold",
+        type=positive_float,
+        default=1.0,
+        help="fast threshold in vehicle-box heights per second",
+    )
+    parser.add_argument("--minimum-speed-observations", type=positive_int, default=3)
+    parser.add_argument(
+        "--minimum-speed-duration-seconds", type=positive_float, default=0.5
+    )
     parser.add_argument(
         "--classes",
         type=class_names_value,
@@ -284,6 +295,11 @@ def run_live(args: argparse.Namespace) -> int:
     event_store = CsvEventStore(args.event_file)
     counter: CrossingCounter | None = None
     counter_size: tuple[int, int] | None = None
+    speed_estimator = TrackSpeedEstimator(
+        fast_threshold=args.fast_speed_threshold,
+        minimum_observations=args.minimum_speed_observations,
+        minimum_duration_seconds=args.minimum_speed_duration_seconds,
+    )
     print(f"Model ready on {detector.device}. Camera URL: {args.url}", flush=True)
     if configured_scene:
         print(
@@ -362,6 +378,9 @@ def run_live(args: argparse.Namespace) -> int:
             stats = store.stats(now=completed_at)
             scene: Scene | None = None
             detections = batch.detections
+            speed_estimates = speed_estimator.update(
+                detections, captured_at=packet.captured_at
+            )
             if configured_scene:
                 scene = configured_scene.scaled(
                     packet.frame.shape[1], packet.frame.shape[0]
@@ -375,13 +394,17 @@ def run_live(args: argparse.Namespace) -> int:
                     maximum_missing_frames=args.maximum_missing_frames,
                 )
                 counter_size = frame_size
-            crossing_events = counter.update(track_observations(detections))
+            crossing_events = counter.update(
+                track_observations(detections, speed_estimates)
+            )
             event_store.write_all(crossing_events)
             for event in crossing_events:
                 print(
                     f"crossing line={event.line_name} direction={event.direction} "
                     f"class={event.label} track_id={event.track_id} "
                     f"confidence={event.confidence:.2f}",
+                    f"speed={event.speed_class} "
+                    f"normalized_speed={event.normalized_speed}",
                     flush=True,
                 )
             latest_metrics = format_detection_metrics(
