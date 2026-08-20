@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "conditions": {
+    "day": {
+      "profile": "day",
+      "sample_count": 0,
+      "operator_approved": false,
+      "ocr_acceptance_rate": 0.0,
+      "baseline_ocr_acceptance_rate": 0.0,
+      "held_out_false_read_rate": 0.0,
+      "baseline_held_out_false_read_rate": 0.0
+    },
+    "glare": {
+      "profile": "glare",
+      "sample_count": 0,
+      "operator_approved": false,
+      "ocr_acceptance_rate": 0.0,
+      "baseline_ocr_acceptance_rate": 0.0,
+      "held_out_false_read_rate": 0.0,
+      "baseline_held_out_false_read_rate": 0.0
+    },
+    "dusk": {
+      "profile": "dusk",
+      "sample_count": 0,
+      "operator_approved": false,
+      "ocr_acceptance_rate": 0.0,
+      "baseline_ocr_acceptance_rate": 0.0,
+      "held_out_false_read_rate": 0.0,
+      "baseline_held_out_false_read_rate": 0.0
+    },
+    "night": {
+      "profile": "night",
+      "sample_count": 0,
+      "operator_approved": false,
+      "ocr_acceptance_rate": 0.0,
+      "baseline_ocr_acceptance_rate": 0.0,
+      "held_out_false_read_rate": 0.0,
+      "baseline_held_out_false_read_rate": 0.0
+    }
+  }
+}

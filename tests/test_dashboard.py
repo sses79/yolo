@@ -7,7 +7,11 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 import roundabout_ai.dashboard
-from roundabout_ai.dashboard import crossing_chart_rows, event_table_rows
+from roundabout_ai.dashboard import (
+    adaptive_camera_performance_rows,
+    crossing_chart_rows,
+    event_table_rows,
+)
 from roundabout_ai.events import EventRecord
 from roundabout_ai.shared_state import DashboardSnapshot
 
@@ -23,8 +27,14 @@ def snapshot() -> DashboardSnapshot:
         0.9,
         ocr_plate="AB12***",
         ocr_confidence=0.91,
+        ocr_status="accepted",
+        plate_detected=True,
+        plate_detector_confidence=0.87,
+        plate_sharpness=102.0,
         speed_class="fast",
         normalized_speed=1.25,
+        camera_profile="day",
+        camera_condition="day",
         preview_image="data:image/jpeg;base64,preview",
     )
     return DashboardSnapshot(
@@ -66,10 +76,46 @@ def test_dashboard_rows_aggregate_crossings_and_serialize_events() -> None:
     assert event_table_rows(current)[0]["normalized_speed"] == 1.25
     assert event_table_rows(current)[0]["ocr_plate"] == "AB12***"
     assert event_table_rows(current)[0]["ocr_confidence"] == 0.91
+    assert event_table_rows(current)[0]["ocr_status"] == "accepted"
     assert (
         event_table_rows(current)[0]["preview_image"]
         == "data:image/jpeg;base64,preview"
     )
+
+
+def test_dashboard_aggregates_profile_performance_with_coverage() -> None:
+    accepted = snapshot().recent_events[0]
+    no_read = replace(
+        accepted,
+        track_id=8,
+        ocr_plate="",
+        ocr_confidence=None,
+        ocr_status="no_read",
+        plate_detected=False,
+        plate_detector_confidence=None,
+        plate_sharpness=None,
+    )
+    not_run = replace(
+        accepted,
+        track_id=9,
+        ocr_plate="",
+        ocr_confidence=None,
+        ocr_status="not_run",
+        plate_detected=None,
+    )
+    current = replace(snapshot(), recent_events=(accepted, no_read, not_run))
+
+    rows = adaptive_camera_performance_rows(current)
+
+    assert len(rows) == 1
+    assert rows[0]["crossings"] == 3
+    assert rows[0]["direction"] == "entering"
+    assert rows[0]["ocr_eligible"] == 2
+    assert rows[0]["plate_detection_rate"] == 0.5
+    assert rows[0]["ocr_accepted"] == 1
+    assert rows[0]["ocr_no_read"] == 1
+    assert rows[0]["ocr_acceptance_rate"] == 0.5
+    assert rows[0]["mean_accepted_ocr_confidence"] == 0.91
 
 
 def test_streamlit_page_renders_without_starting_camera() -> None:

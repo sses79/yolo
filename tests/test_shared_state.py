@@ -83,3 +83,23 @@ def test_dashboard_state_exposes_offline_and_clean_stop_status() -> None:
     state.finish()
     assert not state.snapshot().running
     assert state.snapshot().status == "stopped"
+
+
+def test_dashboard_state_exposes_verified_camera_settings_and_change_time() -> None:
+    state = DashboardState()
+    state.begin()
+
+    state.publish_camera_adaptation(
+        current_profile="dusk",
+        current_settings={"scenemode": "sports", "focusmode": "continuous-video"},
+        last_changed_at="2026-08-20T16:30:00+00:00",
+        status="applied and verified: dusk",
+    )
+
+    snapshot = state.snapshot()
+    assert snapshot.camera_current_profile == "dusk"
+    assert snapshot.camera_current_settings == {
+        "scenemode": "sports",
+        "focusmode": "continuous-video",
+    }
+    assert snapshot.camera_last_changed_at == "2026-08-20T16:30:00+00:00"

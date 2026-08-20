@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 import cv2
@@ -9,6 +10,10 @@ import numpy as np
 
 from roundabout_ai.capture import Frame
 from roundabout_ai.geometry import Point
+
+ADAPTIVE_PROFILE_ORDER = ("night", "dusk", "day", "glare")
+DEFAULT_MAXIMUM_UNDEREXPOSED_RATIO = 0.10
+DEFAULT_MINIMUM_MOVING_SHARPNESS = 30.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +106,64 @@ class CameraProfileAdvisor:
             self._candidate = None
             self._candidate_count = 0
         return self.recommendation
+
+
+def guard_profile_transition(
+    current_profile: str | None,
+    requested_profile: str | None,
+    quality: FrameQuality,
+    *,
+    moving_vehicle_sharpness: float | None = None,
+    known_profile_underexposure: Mapping[str, float] | None = None,
+    maximum_underexposed_ratio: float = DEFAULT_MAXIMUM_UNDEREXPOSED_RATIO,
+    minimum_moving_sharpness: float = DEFAULT_MINIMUM_MOVING_SHARPNESS,
+) -> str | None:
+    """Bound automatic changes using exposure and moving-subject evidence."""
+
+    if requested_profile is None or current_profile is None:
+        return requested_profile
+    if requested_profile == current_profile:
+        return requested_profile
+    if current_profile not in ADAPTIVE_PROFILE_ORDER:
+        return requested_profile
+    if requested_profile not in ADAPTIVE_PROFILE_ORDER:
+        return requested_profile
+    if maximum_underexposed_ratio < 0 or minimum_moving_sharpness < 0:
+        raise ValueError("adaptive transition thresholds must be nonnegative")
+
+    current_index = ADAPTIVE_PROFILE_ORDER.index(current_profile)
+    requested_index = ADAPTIVE_PROFILE_ORDER.index(requested_profile)
+    direction = 1 if requested_index > current_index else -1
+    adjacent_profile = ADAPTIVE_PROFILE_ORDER[current_index + direction]
+
+    # Do not repeatedly re-enter a profile that recently proved unusably dark.
+    # The caller bounds the age of this evidence so ambient changes can be
+    # reconsidered later.
+    adjacent_underexposure = (known_profile_underexposure or {}).get(adjacent_profile)
+    if (
+        adjacent_underexposure is not None
+        and adjacent_underexposure >= maximum_underexposed_ratio
+    ):
+        return current_profile
+
+    # Moving right in the profile order reduces low-light assistance. Do not
+    # make an already underexposed image darker merely because the active night
+    # profile raised its median luminance into the nominal day band.
+    if direction > 0 and (quality.underexposed_ratio >= maximum_underexposed_ratio):
+        return current_profile
+
+    # Moving left increases low-light assistance and can lengthen exposure.
+    # Severe underexposure takes precedence; otherwise retain the faster
+    # profile when recent moving vehicles are already blurred.
+    if (
+        direction < 0
+        and quality.underexposed_ratio < maximum_underexposed_ratio
+        and moving_vehicle_sharpness is not None
+        and moving_vehicle_sharpness < minimum_moving_sharpness
+    ):
+        return current_profile
+
+    return adjacent_profile
 
 
 def _roi_pixels(gray: np.ndarray, roi: tuple[Point, ...]) -> np.ndarray:

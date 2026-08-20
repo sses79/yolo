@@ -9,6 +9,7 @@ import time
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from queue import Empty, SimpleQueue
 from threading import Event, Lock, Thread, current_thread
@@ -31,8 +32,16 @@ from roundabout_ai.camera_control import (
     CameraCapabilities,
     CameraControlError,
     IpWebcamControlClient,
+    identify_camera_profile,
+    load_validated_profile_mapping,
 )
-from roundabout_ai.camera_quality import CameraProfileAdvisor, measure_frame_quality
+from roundabout_ai.camera_quality import (
+    CameraProfileAdvisor,
+    FrameQuality,
+    classify_condition,
+    guard_profile_transition,
+    measure_frame_quality,
+)
 from roundabout_ai.capture import (
     CameraCapture,
     CaptureConfig,
@@ -48,12 +57,14 @@ from roundabout_ai.detector import (
 )
 from roundabout_ai.diagnostic import draw_overlay
 from roundabout_ai.event_images import (
+    VEHICLE_CLASSES,
+    VehicleCandidate,
     VehicleCandidateBuffer,
     event_preview_data_url,
     save_event_candidates,
     save_event_snapshot,
 )
-from roundabout_ai.events import CsvEventStore
+from roundabout_ai.events import CameraEventEvidence, CsvEventStore, OcrEventEvidence
 from roundabout_ai.geometry import CrossingCounter
 from roundabout_ai.ocr import RapidOcrRecognizer
 from roundabout_ai.scene import (
@@ -100,6 +111,8 @@ class ProcessingConfig:
     camera_switch_cooldown_seconds: float = 60.0
     camera_automatic_confirmed: bool = False
     camera_capabilities_file: Path = Path("data/camera/capabilities.json")
+    camera_validated_profiles_file: Path | None = None
+    camera_minimum_profile_samples: int = 30
     live_anpr: bool = False
     anpr_plate_model: Path = Path("models/license-plate.pt")
     anpr_plate_class: str = "license_plate"
@@ -155,6 +168,8 @@ class ProcessingConfig:
             raise ValueError("camera minimum dwell must be nonnegative")
         if self.camera_switch_cooldown_seconds < 0:
             raise ValueError("camera switch cooldown must be nonnegative")
+        if self.camera_minimum_profile_samples <= 0:
+            raise ValueError("minimum profile samples must be positive")
         if not self.anpr_plate_class.strip():
             raise ValueError("ANPR plate class must not be empty")
         if not 0 <= self.anpr_detector_confidence <= 1:
@@ -168,7 +183,9 @@ class ProcessingConfig:
         if self.anpr_maximum_ocr_candidates <= 0:
             raise ValueError("maximum OCR candidates must be positive")
         if self.live_anpr and not self.anpr_plate_model.is_file():
-            raise ValueError(f"ANPR plate model does not exist: {self.anpr_plate_model}")
+            raise ValueError(
+                f"ANPR plate model does not exist: {self.anpr_plate_model}"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -366,6 +383,17 @@ class DetectionWorker:
             event_store = self._event_store_factory(config.event_file)
             control_client: IpWebcamControlClient | None = None
             capabilities: CameraCapabilities | None = None
+            profile_mapping = {condition: condition for condition in CAMERA_PRESETS}
+            validated_mapping = False
+            if (
+                config.camera_adaptation_mode == "automatic"
+                and config.camera_validated_profiles_file is not None
+            ):
+                profile_mapping = load_validated_profile_mapping(
+                    config.camera_validated_profiles_file,
+                    minimum_samples=config.camera_minimum_profile_samples,
+                )
+                validated_mapping = True
             if config.camera_adaptation_mode != "off":
                 control_client = self._control_client_factory(config)
                 try:
@@ -375,7 +403,14 @@ class DetectionWorker:
                     self.state.publish_camera_adaptation(
                         status="ready; recommendation only"
                         if config.camera_adaptation_mode == "recommend"
-                        else "ready; automatic mode armed"
+                        else (
+                            "ready; validated OCR profile mapping armed"
+                            if validated_mapping
+                            else "ready; automatic baseline mapping armed"
+                        ),
+                        current_settings=capabilities.snapshot(
+                            sorted(ALLOWED_SETTINGS)
+                        ),
                     )
                 except CameraControlError as exc:
                     self.state.publish_camera_adaptation(
@@ -402,6 +437,7 @@ class DetectionWorker:
                 capabilities,
                 plate_detector,
                 plate_recognizer,
+                profile_mapping,
             )
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
@@ -425,6 +461,7 @@ class DetectionWorker:
         capabilities: CameraCapabilities | None,
         plate_detector: PlateDetectorLike | None,
         plate_recognizer: PlateRecognizerLike | None,
+        profile_mapping: dict[str, str],
     ) -> None:
         rate = ConsumptionRate()
         processed = 0
@@ -447,14 +484,23 @@ class DetectionWorker:
             else None
         )
         advisor = CameraProfileAdvisor()
+        latest_quality: FrameQuality | None = None
         last_quality_at = float("-inf")
         last_profile_change_at = float("-inf")
         last_auto_attempt_at = float("-inf")
-        current_profile: str | None = None
+        current_profile = (
+            identify_camera_profile(capabilities.current) if capabilities else None
+        )
+        if current_profile is not None:
+            self.state.publish_camera_adaptation(current_profile=current_profile)
         current_settings = (
             capabilities.snapshot(sorted(ALLOWED_SETTINGS)) if capabilities else {}
         )
         rollback_settings: dict[str, str] = {}
+        recommended_profile: str | None = None
+        latest_vehicle_sharpness: float | None = None
+        latest_vehicle_sharpness_at = float("-inf")
+        profile_underexposure: dict[str, tuple[float, float]] = {}
 
         while not self._stop.is_set():
             packet = frame_store.consume_latest()
@@ -487,10 +533,38 @@ class DetectionWorker:
                 quality = measure_frame_quality(
                     packet.frame, scene.roi if scene else ()
                 )
-                recommendation = advisor.observe(quality)
+                latest_quality = quality
+                if current_profile is not None:
+                    profile_underexposure[current_profile] = (
+                        quality.underexposed_ratio,
+                        completed_at,
+                    )
+                condition = advisor.observe(quality)
+                mapped_profile = (
+                    None if condition is None else profile_mapping[condition]
+                )
+                recent_vehicle_sharpness = (
+                    latest_vehicle_sharpness
+                    if completed_at - latest_vehicle_sharpness_at <= 900.0
+                    else None
+                )
+                recommended_profile = guard_profile_transition(
+                    current_profile,
+                    mapped_profile,
+                    quality,
+                    moving_vehicle_sharpness=recent_vehicle_sharpness,
+                    known_profile_underexposure={
+                        profile: ratio
+                        for profile, (
+                            ratio,
+                            observed_at,
+                        ) in profile_underexposure.items()
+                        if completed_at - observed_at <= 900.0
+                    },
+                )
                 self.state.publish_camera_adaptation(
                     quality=quality.as_dict(),
-                    recommended_profile=recommendation,
+                    recommended_profile=recommended_profile,
                 )
                 last_quality_at = completed_at
 
@@ -504,8 +578,8 @@ class DetectionWorker:
             )
             automatic_due = (
                 config.camera_adaptation_mode == "automatic"
-                and advisor.recommendation is not None
-                and advisor.recommendation != current_profile
+                and recommended_profile is not None
+                and recommended_profile != current_profile
                 and completed_at - last_profile_change_at
                 >= config.camera_minimum_dwell_seconds
                 and completed_at - last_auto_attempt_at
@@ -519,7 +593,7 @@ class DetectionWorker:
             elif (
                 requested_profile is not None or automatic_due
             ) and no_vehicle_present:
-                target = requested_profile or advisor.recommendation
+                target = requested_profile or recommended_profile
                 if automatic_due:
                     last_auto_attempt_at = completed_at
                 if control_client is None or capabilities is None:
@@ -550,6 +624,10 @@ class DetectionWorker:
                         self.state.publish_camera_adaptation(
                             current_profile=current_profile or "baseline",
                             status=f"applied and verified: {target}",
+                            current_settings=current_settings,
+                            last_changed_at=datetime.now(UTC).isoformat(
+                                timespec="seconds"
+                            ),
                         )
                         self._logger.info(
                             "camera_profile_applied profile=%s settings=%s",
@@ -573,7 +651,21 @@ class DetectionWorker:
             crossing_events = counter.update(
                 track_observations(detections, speed_estimates)
             )
-            ocr_results: dict[int, tuple[str, float | None]] = {}
+            candidates_by_track: dict[
+                int, tuple[tuple[str, VehicleCandidate], ...]
+            ] = {}
+            if crossing_events and candidate_buffer is not None:
+                for event in crossing_events:
+                    if event.label not in VEHICLE_CLASSES:
+                        continue
+                    candidates = candidate_buffer.select(event.track_id)
+                    candidates_by_track[event.track_id] = candidates
+                    if candidates:
+                        latest_vehicle_sharpness = max(
+                            candidate.sharpness for _kind, candidate in candidates
+                        )
+                        latest_vehicle_sharpness_at = completed_at
+            ocr_evidence: dict[int, OcrEventEvidence] = {}
             if (
                 crossing_events
                 and candidate_buffer is not None
@@ -581,7 +673,9 @@ class DetectionWorker:
                 and plate_recognizer is not None
             ):
                 for event in crossing_events:
-                    candidates = candidate_buffer.select(event.track_id)
+                    if event.label not in VEHICLE_CLASSES:
+                        continue
+                    candidates = candidates_by_track[event.track_id]
                     analysis = analyze_images(
                         f"live-track-{event.track_id}",
                         tuple(
@@ -606,11 +700,25 @@ class DetectionWorker:
                         consensus_builder=build_live_consensus,
                     )
                     result = analysis.result
-                    if result.status is PlateStatus.ACCEPTED:
-                        ocr_results[event.track_id] = (
-                            result.plate_text,
-                            result.confidence,
-                        )
+                    rejection_reasons = tuple(
+                        f"rejected:{reason}:{count}"
+                        for reason, count in sorted(analysis.rejection_reasons.items())
+                    )
+                    ocr_evidence[event.track_id] = OcrEventEvidence(
+                        status=result.status.value,
+                        plate_text=result.plate_text
+                        if result.status is PlateStatus.ACCEPTED
+                        else "",
+                        confidence=result.confidence,
+                        plate_detected=analysis.detections > 0,
+                        plate_detector_confidence=analysis.best_detector_confidence,
+                        plate_width=analysis.best_plate_width,
+                        plate_height=analysis.best_plate_height,
+                        plate_sharpness=analysis.best_plate_sharpness,
+                        observation_count=result.observation_count,
+                        agreement=result.agreement,
+                        reasons=(*result.reasons, *rejection_reasons),
+                    )
                     self._logger.info(
                         "live_anpr track_id=%d status=%s confidence=%s "
                         "observations=%d reasons=%s",
@@ -628,7 +736,28 @@ class DetectionWorker:
                 camera_settings=json.dumps(current_settings, sort_keys=True)
                 if current_settings
                 else "",
-                ocr_results=ocr_results,
+                camera_evidence=CameraEventEvidence(
+                    condition=""
+                    if latest_quality is None
+                    else classify_condition(latest_quality),
+                    luminance_median=None
+                    if latest_quality is None
+                    else latest_quality.luminance_median,
+                    sharpness=None
+                    if latest_quality is None
+                    else latest_quality.sharpness,
+                    directional_blur=None
+                    if latest_quality is None
+                    else latest_quality.directional_blur,
+                    noise=None if latest_quality is None else latest_quality.noise,
+                    underexposed_ratio=None
+                    if latest_quality is None
+                    else latest_quality.underexposed_ratio,
+                    overexposed_ratio=None
+                    if latest_quality is None
+                    else latest_quality.overexposed_ratio,
+                ),
+                ocr_evidence=ocr_evidence,
             )
 
             annotated = packet.frame
@@ -658,7 +787,9 @@ class DetectionWorker:
                         snapshot_path,
                         record.track_id,
                     )
-                    candidates = candidate_buffer.select(record.track_id)
+                    candidates = candidates_by_track.get(
+                        record.track_id, candidate_buffer.select(record.track_id)
+                    )
                     preview_frame = next(
                         (
                             candidate.crop

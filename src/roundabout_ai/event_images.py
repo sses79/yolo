@@ -40,6 +40,7 @@ class VehicleCandidate:
 @dataclass(slots=True)
 class _CandidateState:
     last_seen_frame: int
+    approach: VehicleCandidate
     crossing: VehicleCandidate
     centred: VehicleCandidate
     largest: VehicleCandidate
@@ -79,7 +80,13 @@ def _candidate(
     if x2 - x1 < 2 or y2 - y1 < 2:
         return None
     crop = frame[y1:y2, x1:x2].copy()
-    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    # Rank motion quality from the detected vehicle, not the padded crop. Static
+    # walls and foliage otherwise make a blurred vehicle look artificially sharp.
+    vehicle = frame[
+        max(0, raw_y1) : min(height, raw_y2),
+        max(0, raw_x1) : min(width, raw_x2),
+    ]
+    gray = cv2.cvtColor(vehicle, cv2.COLOR_BGR2GRAY)
     sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
     return VehicleCandidate(
         track_id=detection.track_id,
@@ -169,6 +176,7 @@ class VehicleCandidateBuffer:
             if state is None:
                 self._tracks[current.track_id] = _CandidateState(
                     last_seen_frame=self._frame_number,
+                    approach=current,
                     crossing=current,
                     centred=current,
                     largest=current,
@@ -202,7 +210,7 @@ class VehicleCandidateBuffer:
             del self._tracks[oldest]
 
     def select(self, track_id: int) -> tuple[tuple[str, VehicleCandidate], ...]:
-        """Return distinct crossing/centred/largest/sharpest vehicle crops."""
+        """Return distinct temporal and quality-ranked vehicle crops."""
 
         state = self._tracks.get(track_id)
         if state is None:
@@ -211,6 +219,7 @@ class VehicleCandidateBuffer:
         used_frames: set[int] = set()
         for name, candidate in (
             ("crossing", state.crossing),
+            ("approach", state.approach),
             ("centred", state.centred),
             ("largest", state.largest),
             ("sharpest", state.sharpest),

@@ -453,7 +453,9 @@ new crossing. Do not infer settings for historical events.
 3. Add explicit operator buttons to apply and roll back allowlisted presets.
 4. Collect representative day, glare, dusk, and night evidence for every preset.
 5. Enable automatic selection with hysteresis, minimum dwell time, cooldown,
-   health checks, and rollback to the last known-good profile.
+   adjacent-profile transition guards, moving-vehicle sharpness and
+   underexposure feedback, health checks, and rollback to the last known-good
+   profile.
 6. Consider a learned selector only after offline replay beats the deterministic
    baseline on held-out events.
 
@@ -471,18 +473,24 @@ restarts, and reliably rolls back to the last known-good profile.
 
 ### Phase 7 — OCR-driven camera optimisation
 
-**Implementation status:** planned. Phase 6 proves that bounded presets can be
-recommended, applied, read back, and rolled back. Phase 7 must connect those
-camera changes to event-level plate evidence before claiming that an adaptive
-profile is better for OCR. A successfully applied preset is an input change,
-not an OCR improvement by itself.
+**Implementation status:** evidence and promotion tooling implemented; live
+acceptance exercise pending. Every new crossing records OCR outcome, plate
+detection and quality evidence, ROI quality, speed class, verified settings,
+condition, and active profile. The dashboard compares recent outcomes by
+profile/condition/direction/speed, shows verified settings and change time, and
+displays acceptance coverage alongside confidence. Automatic mode can load an ignored
+local validated mapping only when every condition has enough samples, explicit
+operator approval, non-regressing OCR coverage, and non-increasing held-out
+false reads. A successfully applied preset is still an input change, not an OCR
+improvement by itself.
 
 #### Preserve plate evidence at collection time
 
 General vehicle detections can omit a front or rear bumper even when the full
 plate is present in the source frame. Preserve wider horizontal context around
-each vehicle box and retain distinct `crossing`, `centred`, `largest`, and
-`sharpest` candidates. At crossing time, run the plate detector over these
+each vehicle box and retain distinct `approach`, `crossing`, `centred`,
+`largest`, and vehicle-region `sharpest` candidates. At crossing time, run the
+plate detector over these
 alternatives and continue to OCR only the best bounded set of actual plate
 candidates. Do not treat alternative images from one track as independent
 vehicles.

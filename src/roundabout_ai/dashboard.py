@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import logging
 import os
+import statistics
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
+from collections.abc import Iterable
 from pathlib import Path
 
 import streamlit as st
 
 from roundabout_ai.detector import ROAD_USER_CLASSES
 from roundabout_ai.diagnostic import DEFAULT_URL
+from roundabout_ai.events import EventRecord
 from roundabout_ai.shared_state import DashboardSnapshot
 from roundabout_ai.worker import DetectionWorker, OverlayControls, ProcessingConfig
 
@@ -39,8 +42,66 @@ def crossing_chart_rows(snapshot: DashboardSnapshot) -> list[dict[str, str | int
 
 def event_table_rows(
     snapshot: DashboardSnapshot,
-) -> list[dict[str, str | int | float | None]]:
+) -> list[dict[str, str | int | float | bool | None]]:
     return [event.as_dict() for event in snapshot.recent_events]
+
+
+def adaptive_camera_performance_rows(
+    snapshot: DashboardSnapshot,
+) -> list[dict[str, str | int | float | None]]:
+    """Aggregate recent event outcomes without treating confidence as accuracy."""
+
+    groups: dict[tuple[str, str, str, str], list[EventRecord]] = defaultdict(list)
+    for event in snapshot.recent_events:
+        groups[
+            (
+                event.camera_profile or "baseline",
+                event.camera_condition or "unknown",
+                event.direction,
+                event.speed_class,
+            )
+        ].append(event)
+    rows: list[dict[str, str | int | float | None]] = []
+    for (profile, condition, direction, speed_class), events in sorted(groups.items()):
+        eligible = [event for event in events if event.ocr_status != "not_run"]
+        accepted = [event for event in eligible if event.ocr_status == "accepted"]
+        plate_detected = [event for event in eligible if event.plate_detected is True]
+        rows.append(
+            {
+                "profile": profile,
+                "condition": condition,
+                "direction": direction,
+                "speed_class": speed_class,
+                "crossings": len(events),
+                "ocr_eligible": len(eligible),
+                "plate_detection_rate": _ratio(len(plate_detected), len(eligible)),
+                "ocr_accepted": len(accepted),
+                "ocr_uncertain": sum(
+                    event.ocr_status == "uncertain" for event in eligible
+                ),
+                "ocr_no_read": sum(event.ocr_status == "no_read" for event in eligible),
+                "ocr_acceptance_rate": _ratio(len(accepted), len(eligible)),
+                "mean_accepted_ocr_confidence": _mean(
+                    event.ocr_confidence for event in accepted
+                ),
+                "mean_plate_detector_confidence": _mean(
+                    event.plate_detector_confidence for event in eligible
+                ),
+                "mean_plate_sharpness": _mean(
+                    event.plate_sharpness for event in eligible
+                ),
+            }
+        )
+    return rows
+
+
+def _ratio(numerator: int, denominator: int) -> float | None:
+    return None if denominator == 0 else numerator / denominator
+
+
+def _mean(values: Iterable[float | None]) -> float | None:
+    present = tuple(value for value in values if value is not None)
+    return None if not present else statistics.fmean(present)
 
 
 def _status_text(snapshot: DashboardSnapshot) -> str:
@@ -109,11 +170,11 @@ def render_dashboard() -> None:
             "Save event snapshot and vehicle crops",
             value=False,
             disabled=initial.running,
-                help=(
-                    "Off by default. On a crossing, retain the full annotated event "
-                    "snapshot plus distinct raw crossing, centred, largest, and "
-                    "sharpest vehicle crops locally."
-                ),
+            help=(
+                "Off by default. On a crossing, retain the full annotated event "
+                "snapshot plus distinct raw crossing, centred, largest, and "
+                "sharpest vehicle crops locally."
+            ),
         )
         live_anpr = st.checkbox(
             "Live ANPR/OCR on crossings",
@@ -263,7 +324,7 @@ def render_dashboard() -> None:
                 value=0.2,
                 step=0.1,
             )
-            st.markdown("**Adaptive camera (Phase 6)**")
+            st.markdown("**Adaptive camera (Phases 6-7)**")
             camera_adaptation_mode = st.selectbox(
                 "Camera adaptation",
                 ("off", "recommend", "automatic"),
@@ -315,6 +376,23 @@ def render_dashboard() -> None:
                     "representative road conditions first."
                 ),
             )
+            camera_validated_profiles_file = st.text_input(
+                "Validated OCR profile mapping",
+                value=os.environ.get("ROUNDABOUT_CAMERA_PROFILE_MAPPING", ""),
+                placeholder="Optional: data/camera/validated_profiles.json",
+                disabled=initial.running,
+                help=(
+                    "Optional Phase 7 mapping backed by minimum sample coverage, "
+                    "operator approval, and non-regressing held-out false reads."
+                ),
+            )
+            camera_minimum_profile_samples = st.number_input(
+                "Minimum samples per validated profile",
+                min_value=1,
+                max_value=1000,
+                value=30,
+                disabled=initial.running,
+            )
 
         worker.set_controls(
             OverlayControls(
@@ -362,9 +440,7 @@ def render_dashboard() -> None:
                         anpr_plate_model=Path(anpr_plate_model),
                         anpr_detector_confidence=float(anpr_detector_confidence),
                         anpr_image_size=int(anpr_image_size),
-                        anpr_minimum_ocr_confidence=float(
-                            anpr_minimum_ocr_confidence
-                        ),
+                        anpr_minimum_ocr_confidence=float(anpr_minimum_ocr_confidence),
                         anpr_minimum_agreement=int(anpr_minimum_agreement),
                         camera_adaptation_mode=camera_adaptation_mode,
                         camera_control_url=camera_control_url.strip() or None,
@@ -378,6 +454,14 @@ def render_dashboard() -> None:
                             camera_switch_cooldown_seconds
                         ),
                         camera_automatic_confirmed=camera_automatic_confirmed,
+                        camera_validated_profiles_file=Path(
+                            camera_validated_profiles_file
+                        )
+                        if camera_validated_profiles_file.strip()
+                        else None,
+                        camera_minimum_profile_samples=int(
+                            camera_minimum_profile_samples
+                        ),
                     )
                 )
                 if started:
@@ -418,6 +502,18 @@ def render_dashboard() -> None:
                 else f"{quality['luminance_median']:.0f}/255",
             )
             st.caption(snapshot.camera_control_status)
+            if snapshot.camera_last_changed_at:
+                st.caption(f"Last verified change: {snapshot.camera_last_changed_at}")
+            if snapshot.camera_current_settings:
+                st.caption(
+                    "Verified settings: "
+                    + ", ".join(
+                        f"{name}={value}"
+                        for name, value in sorted(
+                            snapshot.camera_current_settings.items()
+                        )
+                    )
+                )
             if quality:
                 st.caption(
                     f"ROI sharpness {quality['sharpness']:.1f} · "
@@ -436,6 +532,41 @@ def render_dashboard() -> None:
                     worker.request_camera_profile(selected_profile)
                 if rollback_column.button("Roll back", width="stretch"):
                     worker.request_camera_rollback()
+            performance_rows = adaptive_camera_performance_rows(snapshot)
+            st.markdown("**Recent OCR performance by verified profile**")
+            if performance_rows:
+                st.dataframe(
+                    performance_rows,
+                    column_config={
+                        "plate_detection_rate": st.column_config.NumberColumn(
+                            "Plate detected", format="percent"
+                        ),
+                        "ocr_acceptance_rate": st.column_config.NumberColumn(
+                            "OCR accepted", format="percent"
+                        ),
+                        "mean_accepted_ocr_confidence": (
+                            st.column_config.NumberColumn(
+                                "Mean accepted OCR confidence", format="%.3f"
+                            )
+                        ),
+                        "mean_plate_detector_confidence": (
+                            st.column_config.NumberColumn(
+                                "Mean plate confidence", format="%.3f"
+                            )
+                        ),
+                        "mean_plate_sharpness": st.column_config.NumberColumn(
+                            "Mean plate sharpness", format="%.1f"
+                        ),
+                    },
+                    hide_index=True,
+                    width="stretch",
+                )
+                st.caption(
+                    "Recent in-memory events only. Acceptance coverage is a live "
+                    "proxy; held-out labels are still required to measure false reads."
+                )
+            else:
+                st.caption("No crossing evidence for profile comparison yet.")
 
         status_columns = st.columns(6)
         status_columns[0].metric("Capture FPS", f"{snapshot.capture_fps:.1f}")
@@ -495,8 +626,18 @@ def render_dashboard() -> None:
                     "speed_class",
                     "normalized_speed",
                     "ocr_plate",
+                    "ocr_status",
                     "ocr_confidence",
+                    "ocr_observation_count",
+                    "ocr_agreement",
+                    "ocr_reasons",
+                    "plate_detected",
+                    "plate_detector_confidence",
+                    "plate_width",
+                    "plate_height",
+                    "plate_sharpness",
                     "camera_profile",
+                    "camera_condition",
                     "line_name",
                     "track_id",
                     "detection_confidence",

@@ -7,7 +7,9 @@ and directional line-crossing counts. Phase 3 adds durable CSV events and a
 local Streamlit dashboard. Phase 4 adds the evidence gate that decides whether
 the camera view is suitable for a later ANPR prototype, Phase 5 provides the
 offline prototype, and Phase 6 adds bounded camera-quality recommendations and
-opt-in preset control.
+opt-in preset control. Phase 7 joins verified camera context to every OCR
+outcome and permits only evidence-backed profile mappings to replace the
+baseline automatic policy.
 
 ## Project setup
 
@@ -90,9 +92,11 @@ raw video and event images are not retained by default.
 When **Save event snapshot and vehicle crops** is enabled, every confirmed
 crossing saves one full annotated `snapshot` frame. The worker also temporarily
 retains a bounded set of raw vehicle crops for each live track and saves
-distinct candidates for the exact `crossing` frame, the most complete
-`centred` vehicle view, and the `sharpest` vehicle view. Vehicle boxes receive
-15% horizontal and 10% vertical padding, and candidates close enough to an
+distinct candidates for the exact `crossing` frame, the first suitable
+`approach` view before foreground occlusion, the most complete `centred` and
+`largest` views, and the `sharpest` moving-vehicle view. Sharpness ranking uses
+the vehicle box rather than padded static scenery. Vehicle boxes receive
+35% horizontal and 10% vertical padding, and candidates close enough to an
 image edge to lose that padding are marked clipped. Boxes smaller than 200x100
 pixels are excluded from the crop set; the full event snapshot is still saved.
 If one crop wins more than one category, it is saved only once. Raw crops are
@@ -156,10 +160,50 @@ should you select **Automatic (experimental)** and check the explicit
 confirmation box. Automatic switching uses the same three-observation
 hysteresis, waits at least five minutes between successful profile changes, and
 waits at least one minute after a failed attempt. These timings are configurable
-before startup. The preset choices are starting hypotheses—validate readable
+before startup. A guarded recommendation moves only one step through
+`night → dusk → day → glare`, refuses to reduce low-light assistance when at
+least 10% of ROI pixels are underexposed, and uses recent moving-vehicle
+sharpness to avoid adding exposure blur unless underexposure is severe. Moving
+sharpness evidence and the temporary block on a recently underexposed profile
+expire after 15 minutes. Verified read-back settings are
+matched to a known preset after restart, so the guard cannot be bypassed by
+losing the in-memory current-profile name. The preset choices are starting hypotheses—validate readable
 plate rate and sharpness on separate day, direct-sun, dusk, and night batches.
 If night images remain blurred, the controller must report the camera/view limit
 rather than lengthening exposure indefinitely.
+
+## Phase 7 OCR-driven camera optimisation
+
+Phase 7 connects each crossing's camera context to its complete OCR outcome.
+New event rows distinguish `accepted`, `uncertain`, `no_read`, and `not_run`;
+record whether the plate detector found anything; retain detector confidence,
+plate size/sharpness, OCR observations/agreement/reasons; and attach the latest
+ROI condition and quality measurements. Plate text is still masked at the CSV
+boundary. Existing CSV schemas migrate in place, with unavailable historical
+measurements left blank and historical blank OCR marked `not_run` rather than
+inventing a failure.
+
+The dashboard's **Recent OCR performance by verified profile** table groups its
+bounded recent-event window by profile, lighting condition, direction, and
+speed class. It shows plate-detection coverage and accepted/uncertain/no-read outcomes. Mean OCR
+confidence is calculated only for accepted results and is always shown beside
+acceptance coverage; it is not presented as accuracy. The Adaptive camera panel
+also shows the actual read-back settings and last verified change time.
+
+Collect comparable manual-profile batches before promoting a Phase 7 mapping.
+Copy [`camera_profiles.example.json`](camera_profiles.example.json) to the
+ignored `data/camera/` directory, replace its placeholder metrics with measured
+coverage and held-out false-read results, set `operator_approved` only after
+review, and enter that local path in **Validated OCR profile mapping** before
+starting Automatic mode. The loader requires all four conditions, at least 30
+samples per condition by default, non-decreasing OCR acceptance coverage, and
+non-increasing held-out false reads. Invalid or incomplete mappings stop worker
+startup instead of silently controlling the camera.
+
+Without a validated mapping, Automatic mode keeps the Phase 6 identity mapping
+(`day -> day`, `glare -> glare`, and so on) and labels it **automatic baseline
+mapping**. This permits continued evidence collection without claiming the
+baseline presets are OCR-optimal.
 
 ## Phase 4 ANPR feasibility gate
 

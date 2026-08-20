@@ -36,7 +36,7 @@ def candidate_buffer(**kwargs: int) -> VehicleCandidateBuffer:
     )
 
 
-def test_buffer_selects_distinct_crossing_centred_and_sharpest_raw_crops() -> None:
+def test_buffer_retains_approach_and_ranks_sharpness_from_vehicle() -> None:
     buffer = candidate_buffer()
     first = np.zeros((20, 30, 3), dtype=np.uint8)
     first_crop = first[2:10, 2:12]
@@ -51,12 +51,12 @@ def test_buffer_selects_distinct_crossing_centred_and_sharpest_raw_crops() -> No
     selected = buffer.select(7)
     assert [name for name, _candidate in selected] == [
         "crossing",
+        "approach",
         "centred",
-        "sharpest",
     ]
     assert selected[0][1].crop.shape == (12, 15, 3)
-    assert selected[1][1].area == 16 * 17
-    assert selected[2][1].sharpness > selected[1][1].sharpness
+    assert selected[1][1].sharpness > selected[2][1].sharpness
+    assert selected[2][1].area == 16 * 17
     assert np.array_equal(selected[0][1].crop, crossing[3:15, 3:18])
 
 
@@ -77,11 +77,32 @@ def test_buffer_keeps_a_distinct_largest_candidate() -> None:
 
     assert [name for name, _candidate in selected] == [
         "crossing",
+        "approach",
         "centred",
         "largest",
-        "sharpest",
     ]
-    assert selected[2][1].area == 28 * 20
+    assert selected[3][1].area == 28 * 20
+
+
+def test_sharpest_rank_ignores_static_detail_in_crop_padding() -> None:
+    buffer = VehicleCandidateBuffer(
+        minimum_vehicle_width=2,
+        minimum_vehicle_height=2,
+        horizontal_padding_ratio=1.0,
+        vertical_padding_ratio=0,
+    )
+    first = np.zeros((30, 80, 3), dtype=np.uint8)
+    first[:, :20:2] = 255
+    second = np.zeros((30, 80, 3), dtype=np.uint8)
+    second[10:20, 20:40:2] = 255
+    crossing = np.full((30, 80, 3), 80, dtype=np.uint8)
+
+    buffer.observe(first, (detection(7, (30, 10, 50, 20)),))
+    buffer.observe(second, (detection(7, (20, 10, 40, 20)),))
+    buffer.observe(crossing, (detection(7, (30, 10, 50, 20)),))
+
+    selected = dict(buffer.select(7))
+    assert selected["sharpest"].frame_number == 2
 
 
 def test_default_horizontal_context_preserves_a_plate_outside_vehicle_box() -> None:
