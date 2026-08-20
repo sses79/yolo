@@ -60,6 +60,45 @@ def test_buffer_selects_distinct_crossing_centred_and_sharpest_raw_crops() -> No
     assert np.array_equal(selected[0][1].crop, crossing[3:15, 3:18])
 
 
+def test_buffer_keeps_a_distinct_largest_candidate() -> None:
+    buffer = candidate_buffer()
+    sharp = np.zeros((30, 40, 3), dtype=np.uint8)
+    sharp[2:12, 2:12:2] = 255
+    largest = np.full((30, 40, 3), 40, dtype=np.uint8)
+    centred = np.full((30, 40, 3), 80, dtype=np.uint8)
+    crossing = np.full((30, 40, 3), 120, dtype=np.uint8)
+
+    buffer.observe(sharp, (detection(7, (2, 2, 12, 12)),))
+    buffer.observe(largest, (detection(7, (2, 2, 30, 22)),))
+    buffer.observe(centred, (detection(7, (10, 2, 28, 20)),))
+    buffer.observe(crossing, (detection(7, (3, 5, 18, 17)),))
+
+    selected = buffer.select(7)
+
+    assert [name for name, _candidate in selected] == [
+        "crossing",
+        "centred",
+        "largest",
+        "sharpest",
+    ]
+    assert selected[2][1].area == 28 * 20
+
+
+def test_default_horizontal_context_preserves_a_plate_outside_vehicle_box() -> None:
+    frame = np.zeros((100, 200, 3), dtype=np.uint8)
+    frame[55:65, 20:35] = 255
+    buffer = VehicleCandidateBuffer(
+        minimum_vehicle_width=100,
+        minimum_vehicle_height=60,
+    )
+
+    buffer.observe(frame, (detection(7, (50, 20, 150, 80)),))
+
+    candidate = buffer.select(7)[0][1]
+    assert candidate.crop.shape == (72, 170, 3)
+    assert np.all(candidate.crop[41:51, 5:20] == 255)
+
+
 def test_buffer_ignores_people_untracked_boxes_and_expires_tracks() -> None:
     buffer = candidate_buffer(maximum_missing_frames=1)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
@@ -175,7 +214,7 @@ def test_buffer_pads_crops_marks_edges_and_rejects_small_vehicle_boxes() -> None
 
     buffer.observe(frame, (detection(1, (50, 40, 150, 100)),))
     candidate = buffer.select(1)[0][1]
-    assert candidate.crop.shape == (72, 130, 3)
+    assert candidate.crop.shape == (72, 170, 3)
     assert not candidate.clipped
 
     buffer.observe(frame, (detection(2, (5, 40, 105, 100)),))

@@ -56,7 +56,8 @@ storage:
   # Opt-in: save an annotated event snapshot plus distinct raw vehicle crops.
   save_event_images: false
   event_file: "data/events/events.csv"
-  event_crop_horizontal_padding: 0.15
+  # COCO vehicle boxes can omit a front/rear bumper and its number plate.
+  event_crop_horizontal_padding: 0.35
   event_crop_vertical_padding: 0.10
   event_crop_minimum_width: 200
   event_crop_minimum_height: 100

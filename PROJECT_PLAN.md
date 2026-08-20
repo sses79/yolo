@@ -170,7 +170,7 @@ storage:
   save_raw_video: false
   save_event_images: false
   event_file: "data/events/events.csv"
-  event_crop_horizontal_padding: 0.15
+  event_crop_horizontal_padding: 0.35
   event_crop_vertical_padding: 0.10
   event_crop_minimum_width: 200
   event_crop_minimum_height: 100
@@ -257,7 +257,7 @@ Recent events and CSV rows also carry a timestamp-based relative speed class
 sample re-collection; this is explicitly not a physical road-speed estimate.
 Storage is metadata-only by default, with event images requiring explicit
 opt-in. Each confirmed event saves a full annotated snapshot; the crop selector
-also keeps bounded, padded raw crossing, centred, and sharpest candidates per
+also keeps bounded, padded raw crossing, centred, largest, and sharpest candidates per
 vehicle and saves distinct, sufficiently large candidates only after a confirmed crossing. Unit/static
 checks cover CSV serialization, bounded shared
 state, single-worker ownership, dashboard aggregation, and page rendering. The
@@ -469,6 +469,99 @@ rate and character sharpness versus the fixed baseline, does not increase false
 reads or destabilise capture/counting, survives rejected settings and stream
 restarts, and reliably rolls back to the last known-good profile.
 
+### Phase 7 — OCR-driven camera optimisation
+
+**Implementation status:** planned. Phase 6 proves that bounded presets can be
+recommended, applied, read back, and rolled back. Phase 7 must connect those
+camera changes to event-level plate evidence before claiming that an adaptive
+profile is better for OCR. A successfully applied preset is an input change,
+not an OCR improvement by itself.
+
+#### Preserve plate evidence at collection time
+
+General vehicle detections can omit a front or rear bumper even when the full
+plate is present in the source frame. Preserve wider horizontal context around
+each vehicle box and retain distinct `crossing`, `centred`, `largest`, and
+`sharpest` candidates. At crossing time, run the plate detector over these
+alternatives and continue to OCR only the best bounded set of actual plate
+candidates. Do not treat alternative images from one track as independent
+vehicles.
+
+Record a reason when no usable plate reaches OCR so that crop failure, plate
+detection failure, quality rejection, and recognition uncertainty are not all
+represented by the same blank event field.
+
+#### Join camera context to every OCR outcome
+
+Extend event evidence for every eligible vehicle crossing, including failures:
+
+- `ocr_status`: `accepted`, `uncertain`, `no_read`, or `not_run`;
+- plate-detector confidence and whether a plate candidate was found;
+- OCR observation count, agreement count, and accepted confidence;
+- active camera profile and verified allowlisted settings;
+- ROI brightness, sharpness, directional blur, noise, and clipping ratios;
+- relative speed class and configured crossing direction.
+
+Keep registration text masked at the durable event boundary. Diagnostic fields
+must explain the pipeline without creating a second unmasked plate store.
+
+#### Measure outcomes by comparable context
+
+Add an Adaptive Camera Performance view grouped by profile and stratified by
+lighting, direction, and `speed_class`. At minimum show:
+
+- crossings and plate-detection rate;
+- OCR accepted, uncertain, and no-read counts and rates;
+- mean accepted OCR confidence alongside acceptance coverage;
+- plate-crop size and sharpness summaries;
+- held-out exact accuracy and false-read rate when local labels exist.
+
+Accepted OCR per eligible crossing is the primary live proxy. Mean confidence
+alone is insufficient because a profile can appear strong after rejecting most
+vehicles, and OCR confidence is not guaranteed to be calibrated. Only held-out
+labels can establish whether false reads improved.
+
+The dashboard should also expose the actual verified settings, last profile
+change time, last attempt result, and before/after outcome windows. This makes
+`applied and verified` distinguishable from `measured as better`.
+
+#### Calibrate presets before optimising automatically
+
+The shipped Phase 6 presets leave `manual_sensor=off` and mostly vary scene
+mode, focus, and white balance. Treat them as hypotheses. Under comparable
+conditions, collect at least 30–50 consent-appropriate crossings per candidate
+profile before promotion. Change one bounded factor at a time.
+
+If the phone reports safe manual sensor controls, evaluate short exposure plus
+bounded ISO as explicit presets. Prefer exposure short enough to freeze moving
+plates, raise ISO only enough to recover useful luminance, keep night averaging
+off, and reject settings that destabilise capture. A generic `night` scene mode
+may lengthen exposure and must not be considered better without moving-vehicle
+evidence.
+
+After calibration, automatic mode should use an empirically validated mapping:
+
+```text
+stable lighting condition + comparable speed context
+                    |
+                    v
+validated profile with best held-out OCR outcome
+                    |
+                    v
+empty ROI -> apply -> read back -> dwell/cooldown
+```
+
+Do not perform uncontrolled per-vehicle exploration on the public-road stream.
+A contextual bandit or Bayesian optimiser is optional only after offline replay
+and bounded A/B collection outperform the deterministic mapping without
+increasing false reads.
+
+**Exit criteria:** for each supported lighting condition, the selected profile
+has enough comparable event evidence, improves accepted OCR per crossing and
+plate sharpness over the fixed baseline, preserves detection and counting
+stability, and does not increase held-out false-read rate. The dashboard shows
+both the verified camera change and the measured OCR outcome that justified it.
+
 ## 7. Testing strategy
 
 Develop against both the live stream and saved clips. Saved clips make bugs reproducible and avoid waiting for traffic.
@@ -531,3 +624,5 @@ ANPR is successful only if a separate held-out evaluation meets a deliberately c
 10. Implement plate detection/OCR only if the source footage passes that gate.
 11. Add read-only camera quality recommendations, validate manual presets, and
     enable bounded adaptive camera control only after held-out comparison.
+12. Join camera context to all OCR outcomes, compare profiles on stratified
+    event evidence, and promote only held-out Phase 7 improvements.

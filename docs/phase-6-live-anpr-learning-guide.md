@@ -195,7 +195,7 @@ CrossingCounter emits one crossing          |
     `--------------------------------------'
                        |
                        v
-crossing / centred / sharpest in-memory crops
+crossing / centred / largest / sharpest in-memory crops
                        |
                        v
 plate detector -> quality gate -> best three candidates

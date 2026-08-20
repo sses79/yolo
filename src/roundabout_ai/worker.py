@@ -88,7 +88,7 @@ class ProcessingConfig:
     event_file: Path = Path("data/events/events.csv")
     save_event_images: bool = False
     event_image_directory: Path = Path("data/events/images")
-    event_crop_horizontal_padding: float = 0.15
+    event_crop_horizontal_padding: float = 0.35
     event_crop_vertical_padding: float = 0.10
     event_crop_minimum_width: int = 200
     event_crop_minimum_height: int = 100
