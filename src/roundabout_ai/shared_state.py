@@ -32,6 +32,11 @@ class DashboardSnapshot:
     crossing_counts: Mapping[str, int]
     recent_events: tuple[EventRecord, ...]
     person_visible: bool
+    camera_adaptation_mode: str = "off"
+    camera_current_profile: str | None = None
+    camera_recommended_profile: str | None = None
+    camera_control_status: str = "disabled"
+    camera_quality: Mapping[str, float] | None = None
 
     @property
     def total_crossings(self) -> int:
@@ -63,6 +68,11 @@ class DashboardState:
         self._object_counts: dict[str, int] = {}
         self._crossing_counts: dict[str, int] = {}
         self._person_visible = False
+        self._camera_adaptation_mode = "off"
+        self._camera_current_profile: str | None = None
+        self._camera_recommended_profile: str | None = None
+        self._camera_control_status = "disabled"
+        self._camera_quality: dict[str, float] | None = None
 
     def begin(self) -> None:
         with self._lock:
@@ -84,6 +94,34 @@ class DashboardState:
             self._crossing_counts = {}
             self._recent_events.clear()
             self._person_visible = False
+            self._camera_current_profile = None
+            self._camera_recommended_profile = None
+            self._camera_quality = None
+
+    def configure_camera_adaptation(self, mode: str) -> None:
+        with self._lock:
+            self._camera_adaptation_mode = mode
+            self._camera_control_status = (
+                "disabled" if mode == "off" else "discovering capabilities"
+            )
+
+    def publish_camera_adaptation(
+        self,
+        *,
+        quality: Mapping[str, float] | None = None,
+        recommended_profile: str | None = None,
+        current_profile: str | None = None,
+        status: str | None = None,
+    ) -> None:
+        with self._lock:
+            if quality is not None:
+                self._camera_quality = dict(quality)
+            if recommended_profile is not None:
+                self._camera_recommended_profile = recommended_profile
+            if current_profile is not None:
+                self._camera_current_profile = current_profile
+            if status is not None:
+                self._camera_control_status = status
 
     def set_status(self, status: str, message: str | None = None) -> None:
         with self._lock:
@@ -162,4 +200,11 @@ class DashboardState:
                 crossing_counts=dict(self._crossing_counts),
                 recent_events=tuple(self._recent_events),
                 person_visible=self._person_visible,
+                camera_adaptation_mode=self._camera_adaptation_mode,
+                camera_current_profile=self._camera_current_profile,
+                camera_recommended_profile=self._camera_recommended_profile,
+                camera_control_status=self._camera_control_status,
+                camera_quality=None
+                if self._camera_quality is None
+                else dict(self._camera_quality),
             )

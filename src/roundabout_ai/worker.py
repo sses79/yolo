@@ -3,15 +3,25 @@
 from __future__ import annotations
 
 import atexit
+import json
 import logging
 import time
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
+from queue import Empty, SimpleQueue
 from threading import Event, Lock, Thread, current_thread
 from typing import Protocol
 
+from roundabout_ai.camera_control import (
+    ALLOWED_SETTINGS,
+    CAMERA_PRESETS,
+    CameraCapabilities,
+    CameraControlError,
+    IpWebcamControlClient,
+)
+from roundabout_ai.camera_quality import CameraProfileAdvisor, measure_frame_quality
 from roundabout_ai.capture import (
     CameraCapture,
     CaptureConfig,
@@ -70,6 +80,14 @@ class ProcessingConfig:
     event_crop_vertical_padding: float = 0.10
     event_crop_minimum_width: int = 200
     event_crop_minimum_height: int = 100
+    camera_adaptation_mode: str = "off"
+    camera_control_url: str | None = None
+    camera_control_timeout_seconds: float = 2.0
+    camera_quality_interval_seconds: float = 5.0
+    camera_minimum_dwell_seconds: float = 300.0
+    camera_switch_cooldown_seconds: float = 60.0
+    camera_automatic_confirmed: bool = False
+    camera_capabilities_file: Path = Path("data/camera/capabilities.json")
 
     def __post_init__(self) -> None:
         if not self.url.strip():
@@ -95,6 +113,28 @@ class ProcessingConfig:
             raise ValueError("event crop padding must be nonnegative")
         if self.event_crop_minimum_width <= 0 or self.event_crop_minimum_height <= 0:
             raise ValueError("minimum event crop dimensions must be positive")
+        if self.camera_adaptation_mode not in {"off", "recommend", "automatic"}:
+            raise ValueError(
+                "camera adaptation mode must be off, recommend, or automatic"
+            )
+        if self.camera_adaptation_mode != "off" and not (
+            self.camera_control_url and self.camera_control_url.strip()
+        ):
+            raise ValueError("camera control URL is required for camera adaptation")
+        if self.camera_adaptation_mode == "automatic" and not (
+            self.camera_automatic_confirmed
+        ):
+            raise ValueError(
+                "automatic camera adaptation requires explicit confirmation"
+            )
+        if self.camera_control_timeout_seconds <= 0:
+            raise ValueError("camera control timeout must be positive")
+        if self.camera_quality_interval_seconds <= 0:
+            raise ValueError("camera quality interval must be positive")
+        if self.camera_minimum_dwell_seconds < 0:
+            raise ValueError("camera minimum dwell must be nonnegative")
+        if self.camera_switch_cooldown_seconds < 0:
+            raise ValueError("camera switch cooldown must be nonnegative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +167,7 @@ class CameraLike(Protocol):
 DetectorFactory = Callable[[ProcessingConfig], DetectorLike]
 CameraFactory = Callable[[ProcessingConfig, LatestFrameStore], CameraLike]
 EventStoreFactory = Callable[[Path], CsvEventStore]
+ControlClientFactory = Callable[[ProcessingConfig], IpWebcamControlClient]
 
 
 def _create_detector(config: ProcessingConfig) -> DetectorLike:
@@ -152,6 +193,14 @@ def _create_camera(config: ProcessingConfig, store: LatestFrameStore) -> CameraL
     )
 
 
+def _create_control_client(config: ProcessingConfig) -> IpWebcamControlClient:
+    assert config.camera_control_url is not None
+    return IpWebcamControlClient(
+        config.camera_control_url,
+        timeout_seconds=config.camera_control_timeout_seconds,
+    )
+
+
 class DetectionWorker:
     """Own exactly one model, camera reader, and inference loop while running."""
 
@@ -161,12 +210,14 @@ class DetectionWorker:
         detector_factory: DetectorFactory = _create_detector,
         camera_factory: CameraFactory = _create_camera,
         event_store_factory: EventStoreFactory = CsvEventStore,
+        control_client_factory: ControlClientFactory = _create_control_client,
         state: DashboardState | None = None,
     ) -> None:
         self.state = state or DashboardState()
         self._detector_factory = detector_factory
         self._camera_factory = camera_factory
         self._event_store_factory = event_store_factory
+        self._control_client_factory = control_client_factory
         self._logger = logging.getLogger("roundabout_ai.dashboard.worker")
         self._stop = Event()
         self._lifecycle_lock = Lock()
@@ -174,6 +225,7 @@ class DetectionWorker:
         self._controls = OverlayControls()
         self._thread: Thread | None = None
         self._camera: CameraLike | None = None
+        self._camera_commands: SimpleQueue[str] = SimpleQueue()
         atexit.register(self.stop)
 
     @property
@@ -188,6 +240,14 @@ class DetectionWorker:
         with self._controls_lock:
             self._controls = controls
 
+    def request_camera_profile(self, profile: str) -> None:
+        if profile not in CAMERA_PRESETS:
+            raise ValueError(f"unknown camera profile: {profile}")
+        self._camera_commands.put(profile)
+
+    def request_camera_rollback(self) -> None:
+        self._camera_commands.put("rollback")
+
     def _current_controls(self) -> OverlayControls:
         with self._controls_lock:
             return self._controls
@@ -199,6 +259,11 @@ class DetectionWorker:
             if self._thread is not None and self._thread.is_alive():
                 return False
             self._stop.clear()
+            while True:
+                try:
+                    self._camera_commands.get_nowait()
+                except Empty:
+                    break
             with self._controls_lock:
                 self._controls = OverlayControls(
                     confidence=config.confidence,
@@ -207,6 +272,7 @@ class DetectionWorker:
                     show_metrics=self._controls.show_metrics,
                 )
             self.state.begin()
+            self.state.configure_camera_adaptation(config.camera_adaptation_mode)
             self._thread = Thread(
                 target=self._run,
                 args=(config,),
@@ -240,6 +306,23 @@ class DetectionWorker:
             self.state.set_status("loading_model", f"Loading {config.model}")
             detector = self._detector_factory(config)
             event_store = self._event_store_factory(config.event_file)
+            control_client: IpWebcamControlClient | None = None
+            capabilities: CameraCapabilities | None = None
+            if config.camera_adaptation_mode != "off":
+                control_client = self._control_client_factory(config)
+                try:
+                    capabilities = control_client.save_capabilities(
+                        config.camera_capabilities_file
+                    )
+                    self.state.publish_camera_adaptation(
+                        status="ready; recommendation only"
+                        if config.camera_adaptation_mode == "recommend"
+                        else "ready; automatic mode armed"
+                    )
+                except CameraControlError as exc:
+                    self.state.publish_camera_adaptation(
+                        status=f"capability discovery failed: {exc}"
+                    )
             frame_store = LatestFrameStore()
             camera = self._camera_factory(config, frame_store)
             with self._lifecycle_lock:
@@ -251,7 +334,15 @@ class DetectionWorker:
                 config.url,
             )
             camera.start()
-            self._process_frames(config, detector, event_store, frame_store, scene)
+            self._process_frames(
+                config,
+                detector,
+                event_store,
+                frame_store,
+                scene,
+                control_client,
+                capabilities,
+            )
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
             self._logger.exception("worker_failed error=%s", error)
@@ -270,6 +361,8 @@ class DetectionWorker:
         event_store: CsvEventStore,
         frame_store: LatestFrameStore,
         configured_scene: Scene | None,
+        control_client: IpWebcamControlClient | None,
+        capabilities: CameraCapabilities | None,
     ) -> None:
         rate = ConsumptionRate()
         processed = 0
@@ -291,6 +384,15 @@ class DetectionWorker:
             if config.save_event_images
             else None
         )
+        advisor = CameraProfileAdvisor()
+        last_quality_at = float("-inf")
+        last_profile_change_at = float("-inf")
+        last_auto_attempt_at = float("-inf")
+        current_profile: str | None = None
+        current_settings = (
+            capabilities.snapshot(sorted(ALLOWED_SETTINGS)) if capabilities else {}
+        )
+        rollback_settings: dict[str, str] = {}
 
         while not self._stop.is_set():
             packet = frame_store.consume_latest()
@@ -317,6 +419,87 @@ class DetectionWorker:
             if scene:
                 detections = filter_detections_by_roi(detections, scene.roi)
 
+            if config.camera_adaptation_mode != "off" and (
+                completed_at - last_quality_at >= config.camera_quality_interval_seconds
+            ):
+                quality = measure_frame_quality(
+                    packet.frame, scene.roi if scene else ()
+                )
+                recommendation = advisor.observe(quality)
+                self.state.publish_camera_adaptation(
+                    quality=quality.as_dict(),
+                    recommended_profile=recommendation,
+                )
+                last_quality_at = completed_at
+
+            requested_profile: str | None = None
+            try:
+                requested_profile = self._camera_commands.get_nowait()
+            except Empty:
+                pass
+            no_vehicle_present = not any(
+                detection.label in ROAD_USER_CLASSES for detection in detections
+            )
+            automatic_due = (
+                config.camera_adaptation_mode == "automatic"
+                and advisor.recommendation is not None
+                and advisor.recommendation != current_profile
+                and completed_at - last_profile_change_at
+                >= config.camera_minimum_dwell_seconds
+                and completed_at - last_auto_attempt_at
+                >= config.camera_switch_cooldown_seconds
+            )
+            if requested_profile is not None and not no_vehicle_present:
+                self._camera_commands.put(requested_profile)
+                self.state.publish_camera_adaptation(
+                    status="camera change waiting for an empty ROI"
+                )
+            elif (
+                requested_profile is not None or automatic_due
+            ) and no_vehicle_present:
+                target = requested_profile or advisor.recommendation
+                if automatic_due:
+                    last_auto_attempt_at = completed_at
+                if control_client is None or capabilities is None:
+                    self.state.publish_camera_adaptation(
+                        status="camera control unavailable; recommendation retained"
+                    )
+                else:
+                    try:
+                        if target == "rollback":
+                            if not rollback_settings:
+                                raise CameraControlError(
+                                    "no previous settings to restore"
+                                )
+                            result = control_client.rollback(rollback_settings)
+                            current_profile = None
+                        else:
+                            assert target is not None
+                            result = control_client.apply_preset(
+                                CAMERA_PRESETS[target], capabilities=capabilities
+                            )
+                            current_profile = result.profile
+                        rollback_settings = dict(result.previous)
+                        capabilities = control_client.capabilities()
+                        current_settings = capabilities.snapshot(
+                            sorted(ALLOWED_SETTINGS)
+                        )
+                        last_profile_change_at = completed_at
+                        self.state.publish_camera_adaptation(
+                            current_profile=current_profile or "baseline",
+                            status=f"applied and verified: {target}",
+                        )
+                        self._logger.info(
+                            "camera_profile_applied profile=%s settings=%s",
+                            target,
+                            json.dumps(result.applied, sort_keys=True),
+                        )
+                    except CameraControlError as exc:
+                        self.state.publish_camera_adaptation(
+                            status=f"camera change failed; rolled back: {exc}"
+                        )
+                        self._logger.warning("camera_profile_failed error=%s", exc)
+
             frame_size = (width, height)
             if counter is None or counter_size != frame_size:
                 counter = CrossingCounter(
@@ -328,7 +511,13 @@ class DetectionWorker:
             crossing_events = counter.update(
                 track_observations(detections, speed_estimates)
             )
-            event_records = event_store.write_all(crossing_events)
+            event_records = event_store.write_all(
+                crossing_events,
+                camera_profile=current_profile or "",
+                camera_settings=json.dumps(current_settings, sort_keys=True)
+                if current_settings
+                else "",
+            )
 
             annotated = packet.frame
             if controls.show_scene and scene:

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from roundabout_ai.geometry import CrossingEvent
 
-EVENT_FIELDS = (
+BASE_EVENT_FIELDS = (
     "timestamp",
     "event_type",
     "line_name",
@@ -21,10 +21,17 @@ EVENT_FIELDS = (
     "detection_confidence",
     "plate_text",
     "plate_confidence",
+)
+SPEED_EVENT_FIELDS = (
+    *BASE_EVENT_FIELDS,
     "speed_class",
     "normalized_speed",
 )
-LEGACY_EVENT_FIELDS = EVENT_FIELDS[:-2]
+EVENT_FIELDS = (
+    *SPEED_EVENT_FIELDS,
+    "camera_profile",
+    "camera_settings",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +47,8 @@ class EventRecord:
     plate_confidence: float | None = None
     speed_class: str = "unknown"
     normalized_speed: float | None = None
+    camera_profile: str = ""
+    camera_settings: str = ""
     preview_image: str | None = None
 
     def csv_row(self) -> tuple[str, ...]:
@@ -55,6 +64,8 @@ class EventRecord:
             "" if self.plate_confidence is None else f"{self.plate_confidence:.6f}",
             self.speed_class,
             "" if self.normalized_speed is None else f"{self.normalized_speed:.6f}",
+            self.camera_profile,
+            self.camera_settings,
         )
 
     def as_dict(self) -> dict[str, str | int | float | None]:
@@ -71,6 +82,8 @@ class EventRecord:
             "normalized_speed": self.normalized_speed,
             "plate_text": self.plate_text,
             "plate_confidence": self.plate_confidence,
+            "camera_profile": self.camera_profile,
+            "camera_settings": self.camera_settings,
         }
 
 
@@ -106,6 +119,8 @@ class CsvEventStore:
         events: Iterable[CrossingEvent],
         *,
         timestamp: datetime | None = None,
+        camera_profile: str = "",
+        camera_settings: str = "",
     ) -> tuple[EventRecord, ...]:
         """Write one frame's events and return their timestamped records."""
 
@@ -124,6 +139,8 @@ class CsvEventStore:
                 event.confidence,
                 speed_class=event.speed_class,
                 normalized_speed=event.normalized_speed,
+                camera_profile=camera_profile,
+                camera_settings=camera_settings,
             )
             for event in pending
         )
@@ -135,7 +152,13 @@ class CsvEventStore:
                     handle.seek(0)
                     existing_header = next(csv.reader(handle), None)
                     header = tuple(existing_header) if existing_header else None
-                    if header not in {None, EVENT_FIELDS, LEGACY_EVENT_FIELDS}:
+                    supported_headers = {
+                        None,
+                        EVENT_FIELDS,
+                        SPEED_EVENT_FIELDS,
+                        BASE_EVENT_FIELDS,
+                    }
+                    if header not in supported_headers:
                         raise ValueError(
                             f"event file has an unexpected CSV header: {self.path}"
                         )
@@ -143,13 +166,18 @@ class CsvEventStore:
                     writer = csv.writer(handle)
                     if existing_header is None:
                         writer.writerow(EVENT_FIELDS)
-                    if header == LEGACY_EVENT_FIELDS:
+                    if header in {BASE_EVENT_FIELDS, SPEED_EVENT_FIELDS}:
                         handle.seek(0)
                         legacy_rows = list(csv.reader(handle))[1:]
                         handle.seek(0)
                         handle.truncate()
                         writer.writerow(EVENT_FIELDS)
-                        writer.writerows((*row, "unknown", "") for row in legacy_rows)
+                        if header == BASE_EVENT_FIELDS:
+                            writer.writerows(
+                                (*row, "unknown", "", "", "") for row in legacy_rows
+                            )
+                        else:
+                            writer.writerows((*row, "", "") for row in legacy_rows)
                     handle.seek(0, 2)
                     writer.writerows(record.csv_row() for record in records)
         except OSError as exc:

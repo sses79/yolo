@@ -51,6 +51,8 @@ def test_csv_event_store_appends_stable_metadata_rows(tmp_path: Path) -> None:
             "plate_confidence": "",
             "speed_class": "unknown",
             "normalized_speed": "",
+            "camera_profile": "",
+            "camera_settings": "",
         },
         {
             "timestamp": "2026-08-15T18:30:01.234Z",
@@ -64,6 +66,8 @@ def test_csv_event_store_appends_stable_metadata_rows(tmp_path: Path) -> None:
             "plate_confidence": "",
             "speed_class": "unknown",
             "normalized_speed": "",
+            "camera_profile": "",
+            "camera_settings": "",
         },
     ]
 
@@ -87,7 +91,7 @@ def test_csv_event_store_rejects_an_incompatible_existing_file(
 
 def test_csv_event_store_upgrades_legacy_event_file(tmp_path: Path) -> None:
     path = tmp_path / "events.csv"
-    legacy_header = EVENT_FIELDS[:-2]
+    legacy_header = EVENT_FIELDS[:-4]
     path.write_text(",".join(legacy_header) + "\n", encoding="utf-8")
 
     CsvEventStore(path).write_all((crossing_event(),))
@@ -95,7 +99,26 @@ def test_csv_event_store_upgrades_legacy_event_file(tmp_path: Path) -> None:
     with path.open(encoding="utf-8", newline="") as handle:
         rows = list(csv.reader(handle))
     assert tuple(rows[0]) == EVENT_FIELDS
-    assert rows[1][-2:] == ["unknown", ""]
+    assert rows[1][-4:] == ["unknown", "", "", ""]
+
+
+def test_csv_event_store_records_profile_and_upgrades_speed_schema(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "events.csv"
+    speed_header = EVENT_FIELDS[:-2]
+    path.write_text(",".join(speed_header) + "\n", encoding="utf-8")
+
+    records = CsvEventStore(path).write_all(
+        (crossing_event(),),
+        camera_profile="day",
+        camera_settings='{"focusmode": "continuous-video"}',
+    )
+
+    rows = read_rows(path)
+    assert rows[0]["camera_profile"] == "day"
+    assert rows[0]["camera_settings"] == '{"focusmode": "continuous-video"}'
+    assert records[0].camera_profile == "day"
 
 
 def test_timestamp_requires_timezone_and_schema_has_unique_fields() -> None:

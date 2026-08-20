@@ -338,6 +338,132 @@ is not enabled in this local baseline.
 
 **Exit criteria:** evaluate on held-out labelled vehicles and report exact-plate accuracy, character accuracy, no-read rate, and false-read rate. A correct-looking live demo is not sufficient evaluation.
 
+### Phase 6 — Adaptive camera configuration
+
+**Implementation status:** implemented by the Phase 3 dashboard worker. It now
+discovers and saves the phone's reported capabilities, measures calibrated-ROI
+brightness, clipping, sharpness, directional blur, and noise, and requires
+three consistent observations before recommending day, glare, dusk, or night.
+The dashboard can explicitly apply or roll back a typed, capability-validated
+preset. Experimental automatic mode is separately opt-in and adds empty-ROI,
+minimum-dwell, cooldown, read-back, and rollback gates. Every new crossing CSV
+row records the active profile and an allowlisted settings snapshot. The exit
+criteria still require separately labelled live day, glare, dusk, and night
+comparisons; the shipped presets are a deterministic baseline, not a claim of
+camera or OCR improvement.
+
+The controller is a bounded feedback loop, not a general AI agent:
+
+```text
+road/plate ROI frames + tracked crossing metadata
+                    |
+                    v
+brightness / clipping / blur / noise / plate size / relative speed
+                    |
+                    v
+condition classifier: day / glare / dusk / night
+                    |
+                    v
+choose one allowlisted camera preset
+                    |
+                    v
+IP Webcam HTTP control -> read back state -> cooldown
+                    |
+                    v
+human-readable rate + OCR accepted/uncertain/no-read evidence
+```
+
+Prefer a small deterministic state machine initially. A contextual bandit or
+Bayesian optimiser becomes useful only after enough labelled events exist to
+compare presets under similar lighting and vehicle-speed conditions. An LLM is
+not needed in the control loop.
+
+#### Confirmed IP Webcam control surface
+
+Use a configurable base URL such as `http://192.168.1.142:8080`; never derive
+control authority from the public MJPEG URL. The installed web page performs
+these requests:
+
+| Purpose | HTTP request | Notes from this phone |
+|---|---|---|
+| Read state and capabilities | `POST /status.json?show_avail=1` | Returns `curvals`, `avail`, and device status without changing settings |
+| Generic setting | `POST /settings/<name>?set=<value>` | Used for most enumerated and numeric controls |
+| Digital zoom | `POST /ptz?zoom=<index>` | UI indexes the reported zoom choices; reported range is 1.00×–10.00× |
+| Stream quality | `POST /settings/quality?set=<1..100>` | Current value observed as 49 |
+| Video resolution | `POST /settings/video_size?set=<WxH>` | Includes 3840×2160, 1920×1080, and lower modes |
+| Focus | `POST /settings/focusmode?set=<mode>` and `POST /settings/focus_distance?set=<dioptres>` | Modes include auto, macro, continuous-video, continuous-picture, and off; distance range is 0.0–10.0/m |
+| Automatic imaging | `POST /settings/scenemode?set=<mode>`, `whitebalance`, and `antibanding` | Includes action/sports/night/HDR scene modes and several white-balance choices |
+| Night processing | `POST /settings/night_vision?set=on|off`, plus `night_vision_gain` and `night_vision_average` | Treat as separate presets because averaging can blur moving vehicles |
+| Manual sensor | `POST /settings/manual_sensor?set=on|off` | Enables direct ISO/exposure/frame-duration control when supported |
+| ISO | `POST /settings/iso?set=<value>` | Reported range is ISO 50–3200 |
+| Exposure | `POST /settings/exposure_ns?set=<nanoseconds>` | Values are nanoseconds; validate against device bounds and frame duration |
+| Frame duration | `POST /settings/frame_duration?set=<nanoseconds>` | Current 33,333,333 ns is approximately 30 FPS |
+
+The current capability snapshot reported 3840×2160 video, approximately 1.99×
+digital zoom, `continuous-picture` focus, automatic scene/white balance,
+manual sensor control off, ISO 50, and a 33.3 ms frame duration. Values reported
+while automatic sensor control is enabled are observations, not stable manual
+settings. The phone exposes only one focal length and aperture, so Phase 6
+cannot optimise those mechanically. Digital zoom also cannot create optical
+detail that the sensor did not capture.
+
+All writes must use a typed allowlist and values returned by `avail`; never
+allow arbitrary endpoint names or raw URLs from a model. After every change,
+read `/status.json?show_avail=1` again and verify the requested value. Resolution
+changes may interrupt MJPEG and must deliberately trigger the existing capture
+reconnect path.
+
+#### Presets and objective measurements
+
+Start with manually reviewed presets rather than per-vehicle adjustments:
+
+- **Day:** short exposure, moderate ISO, calibrated fixed or stable continuous
+  focus, and the validated resolution/zoom.
+- **Direct sun/glare:** short exposure with highlight clipping constrained;
+  retain enough shadow detail for dark vehicles.
+- **Dusk:** slightly longer exposure and higher ISO while keeping vehicle blur
+  within the labelled acceptance boundary.
+- **Night:** the shortest exposure supported by available light, higher ISO,
+  and no multi-frame night averaging unless tests show moving plates remain
+  sharp.
+
+Measure the road and expected plate region rather than the whole frame. Candidate
+features and rewards are:
+
+- ROI luminance percentiles and over/underexposed pixel percentages;
+- Laplacian sharpness, directional motion blur, noise, and crop clipping;
+- detected plate and character pixel size;
+- relative vehicle speed and crossing direction;
+- plate-detector confidence;
+- human-readable rate and OCR `accepted`, `uncertain`, and `no_read` rates;
+- false-read rate from held-out labels, never from live guesses.
+
+Record a `camera_profile` name and a non-sensitive settings snapshot with each
+new crossing. Do not infer settings for historical events.
+
+#### Control and safety stages
+
+1. Add a read-only `CameraCapabilities` client and save capability snapshots.
+2. Compute quality metrics and show a recommended profile without camera writes.
+3. Add explicit operator buttons to apply and roll back allowlisted presets.
+4. Collect representative day, glare, dusk, and night evidence for every preset.
+5. Enable automatic selection with hysteresis, minimum dwell time, cooldown,
+   health checks, and rollback to the last known-good profile.
+6. Consider a learned selector only after offline replay beats the deterministic
+   baseline on held-out events.
+
+Only one process may own camera configuration. Do not change settings while a
+vehicle is crossing, do not continuously chase individual objects, and do not
+use torch/flash toward a public road. If light is insufficient, report that the
+hardware/view has reached its limit rather than hiding blur with longer
+exposure.
+
+**Exit criteria:** across separately labelled day, glare, dusk, and night
+batches, automatic preset selection improves or preserves human-readable plate
+rate and character sharpness versus the fixed baseline, does not increase false
+reads or destabilise capture/counting, survives rejected settings and stream
+restarts, and reliably rolls back to the last known-good profile.
+
 ## 7. Testing strategy
 
 Develop against both the live stream and saved clips. Saved clips make bugs reproducible and avoid waiting for traffic.
@@ -398,3 +524,5 @@ ANPR is successful only if a separate held-out evaluation meets a deliberately c
 8. Evaluate the MVP on manually labelled footage.
 9. Run the ANPR feasibility gate.
 10. Implement plate detection/OCR only if the source footage passes that gate.
+11. Add read-only camera quality recommendations, validate manual presets, and
+    enable bounded adaptive camera control only after held-out comparison.

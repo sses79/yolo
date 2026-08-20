@@ -5,7 +5,9 @@ provides resilient camera diagnostics, Phase 1 adds local YOLO vehicle/person
 detection, and Phase 2 adds scene calibration, ByteTrack IDs, ROI filtering,
 and directional line-crossing counts. Phase 3 adds durable CSV events and a
 local Streamlit dashboard. Phase 4 adds the evidence gate that decides whether
-the camera view is suitable for a later ANPR prototype.
+the camera view is suitable for a later ANPR prototype, Phase 5 provides the
+offline prototype, and Phase 6 adds bounded camera-quality recommendations and
+opt-in preset control.
 
 ## Project setup
 
@@ -124,6 +126,40 @@ To select another port while keeping the localhost-only bind:
 ```bash
 .venv/bin/roundabout-dashboard --server.port 8502
 ```
+
+## Phase 6 adaptive camera configuration
+
+Open **Advanced → Adaptive camera (Phase 6)** in the dashboard. Start with
+**Recommend only** and enter the IP Webcam base control URL explicitly, for
+example `http://192.168.1.142:8080` (without `/video`). The worker reads
+`/status.json?show_avail=1`, saves the reported snapshot to
+`data/camera/capabilities.json`, and does not write a setting in recommendation
+mode.
+
+Every five seconds it measures the calibrated road ROI rather than the whole
+image: luminance percentiles, dark/bright clipping, Laplacian sharpness,
+directional blur, and noise. Three consecutive matching observations are
+required before the dashboard recommends `day`, `glare`, `dusk`, or `night`.
+This is a deterministic image-quality baseline, not an LLM decision.
+
+While processing is running, use **Apply profile** to test the recommendation.
+The camera client permits only known imaging settings, validates each value
+against this phone's reported capabilities, reads the state back after applying
+it, and rolls back if verification fails. It never controls torch or flash. A
+manual or automatic request waits until the road ROI contains no detected road
+user, so it does not change exposure/focus during a crossing. New CSV events
+include `camera_profile` and the non-sensitive allowlisted settings snapshot;
+historical rows are left blank during automatic schema migration.
+
+Only after manually reviewing all four presets under representative conditions
+should you select **Automatic (experimental)** and check the explicit
+confirmation box. Automatic switching uses the same three-observation
+hysteresis, waits at least five minutes between successful profile changes, and
+waits at least one minute after a failed attempt. These timings are configurable
+before startup. The preset choices are starting hypotheses—validate readable
+plate rate and sharpness on separate day, direct-sun, dusk, and night batches.
+If night images remain blurred, the controller must report the camera/view limit
+rather than lengthening exposure indefinitely.
 
 ## Phase 4 ANPR feasibility gate
 

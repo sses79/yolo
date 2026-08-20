@@ -213,6 +213,58 @@ def render_dashboard() -> None:
                 value=0.2,
                 step=0.1,
             )
+            st.markdown("**Adaptive camera (Phase 6)**")
+            camera_adaptation_mode = st.selectbox(
+                "Camera adaptation",
+                ("off", "recommend", "automatic"),
+                format_func=lambda value: {
+                    "off": "Off",
+                    "recommend": "Recommend only",
+                    "automatic": "Automatic (experimental)",
+                }[value],
+                disabled=initial.running,
+                help=(
+                    "Recommendations never write settings. Automatic mode uses "
+                    "only allowlisted presets after repeated ROI measurements."
+                ),
+            )
+            camera_control_url = st.text_input(
+                "IP Webcam control URL",
+                value=os.environ.get("ROUNDABOUT_CAMERA_CONTROL_URL", ""),
+                placeholder="http://192.168.1.142:8080",
+                disabled=initial.running,
+                help="Explicit base URL; do not include /video.",
+            )
+            camera_quality_interval_seconds = st.number_input(
+                "Quality evaluation interval (seconds)",
+                min_value=1.0,
+                max_value=300.0,
+                value=5.0,
+                disabled=initial.running,
+            )
+            camera_minimum_dwell_seconds = st.number_input(
+                "Minimum profile dwell (seconds)",
+                min_value=0.0,
+                max_value=3600.0,
+                value=300.0,
+                disabled=initial.running,
+            )
+            camera_switch_cooldown_seconds = st.number_input(
+                "Failed-switch cooldown (seconds)",
+                min_value=0.0,
+                max_value=3600.0,
+                value=60.0,
+                disabled=initial.running,
+            )
+            camera_automatic_confirmed = st.checkbox(
+                "I reviewed the presets and accept automatic camera changes",
+                value=False,
+                disabled=initial.running,
+                help=(
+                    "Required for automatic mode. Test each preset manually under "
+                    "representative road conditions first."
+                ),
+            )
 
         worker.set_controls(
             OverlayControls(
@@ -256,6 +308,18 @@ def render_dashboard() -> None:
                         event_crop_vertical_padding=float(event_crop_vertical_padding),
                         event_crop_minimum_width=int(event_crop_minimum_width),
                         event_crop_minimum_height=int(event_crop_minimum_height),
+                        camera_adaptation_mode=camera_adaptation_mode,
+                        camera_control_url=camera_control_url.strip() or None,
+                        camera_quality_interval_seconds=float(
+                            camera_quality_interval_seconds
+                        ),
+                        camera_minimum_dwell_seconds=float(
+                            camera_minimum_dwell_seconds
+                        ),
+                        camera_switch_cooldown_seconds=float(
+                            camera_switch_cooldown_seconds
+                        ),
+                        camera_automatic_confirmed=camera_automatic_confirmed,
                     )
                 )
                 if started:
@@ -277,6 +341,43 @@ def render_dashboard() -> None:
             st.info(status)
         if snapshot.person_visible:
             st.warning("Person detected in the configured road ROI.")
+
+        if snapshot.camera_adaptation_mode != "off":
+            st.subheader("Adaptive camera")
+            profile_columns = st.columns(4)
+            profile_columns[0].metric("Mode", snapshot.camera_adaptation_mode.title())
+            profile_columns[1].metric(
+                "Current profile", snapshot.camera_current_profile or "Baseline"
+            )
+            profile_columns[2].metric(
+                "Recommended", snapshot.camera_recommended_profile or "Collecting"
+            )
+            quality = snapshot.camera_quality or {}
+            profile_columns[3].metric(
+                "ROI brightness",
+                "n/a"
+                if "luminance_median" not in quality
+                else f"{quality['luminance_median']:.0f}/255",
+            )
+            st.caption(snapshot.camera_control_status)
+            if quality:
+                st.caption(
+                    f"ROI sharpness {quality['sharpness']:.1f} · "
+                    f"underexposed {quality['underexposed_ratio']:.1%} · "
+                    f"overexposed {quality['overexposed_ratio']:.1%} · "
+                    f"noise {quality['noise']:.1f}"
+                )
+            if snapshot.running:
+                selected_profile = st.selectbox(
+                    "Manual camera profile",
+                    ("day", "glare", "dusk", "night"),
+                    key="manual_camera_profile",
+                )
+                apply_column, rollback_column = st.columns(2)
+                if apply_column.button("Apply profile", width="stretch"):
+                    worker.request_camera_profile(selected_profile)
+                if rollback_column.button("Roll back", width="stretch"):
+                    worker.request_camera_rollback()
 
         status_columns = st.columns(6)
         status_columns[0].metric("Capture FPS", f"{snapshot.capture_fps:.1f}")
@@ -335,6 +436,7 @@ def render_dashboard() -> None:
                     "direction",
                     "speed_class",
                     "normalized_speed",
+                    "camera_profile",
                     "line_name",
                     "track_id",
                     "detection_confidence",
